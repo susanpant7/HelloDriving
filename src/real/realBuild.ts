@@ -13,7 +13,7 @@ const KERB: V3 = [0.62, 0.62, 0.6], WALK: V3 = [0.7, 0.69, 0.66], POST: V3 = [0.
 const Y_ROAD = 0, Y_MARK = 0.015, Y_WALK = 0.05
 
 /** flat (or boxy) triangles with a colour each, gathered into one geometry */
-class Geo {
+export class Geo {
   pos: number[] = []
   nor: number[] = []
   col: number[] = []

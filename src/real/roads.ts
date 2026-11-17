@@ -286,6 +286,10 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     if (j.ends.some(({ e }) => edges[e].ring)) { for (const q of arriving) j.ctl.set(q.e, edges[q.e].ring ? 'none' : 'yield'); continue }
     // highway merges and splits, and roads joining a highway's slip roads: lanes merge, no signs
     if (cls.every((c) => c === 'motorway' || c === 'motorway_link' || c === 'trunk' || c === 'trunk_link')) { for (const q of arriving) j.ctl.set(q.e, 'none'); continue }
+    // two different main roads meeting (not just one road changing its name): in a US town that is almost always a junction with
+    // traffic lights, even where the map does not record them
+    const mainNames = new Set(j.ends.filter(({ e }) => isMain(edges[e].cls)).map(({ e }) => edges[e].name || `#${e}`))
+    if (mainNames.size >= 2) { for (const q of arriving) j.ctl.set(q.e, 'signal'); signals++; continue }
     const top = Math.max(...j.ends.map(({ e }) => RANK[edges[e].cls]))
     const minor = arriving.filter(({ e }) => RANK[edges[e].cls] < top)
     if (minor.length) {
@@ -298,12 +302,6 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       continue
     }
     // streets of the same kind
-    if (isMain(edges[j.ends[0].e].cls) && j.ends.length >= 4) {
-      // two main roads crossing: such junctions usually have lights (not recorded here); an all-way stop is the safe guess
-      j.allWay = true
-      for (const q of arriving) { j.ctl.set(q.e, 'stop'); stopsGuessed++ }
-      continue
-    }
     if (j.ends.length >= 4) {
       j.allWay = true
       for (const q of arriving) { j.ctl.set(q.e, 'stop'); stopsGuessed++ }

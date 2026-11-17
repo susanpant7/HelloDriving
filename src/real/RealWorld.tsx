@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { sim } from '../game/sim'
 import { useGame } from '../game/store'
 import { REAL, tileBoxes, type Place } from './load'
+import { RealLights } from './RealLights'
 import { buildBuildings, buildRoads, placeTrees, signAtlas, signMesh, tileSignature, type Box } from './realBuild'
 
 type Mats = ReturnType<typeof makeMats>
@@ -99,5 +100,10 @@ export function RealWorld() {
     for (const v of Object.values(mats)) (v as { dispose?: () => void }).dispose?.()
   }, [mats])
 
-  return <primitive object={root} />
+  return (
+    <>
+      <primitive object={root} />
+      <RealLights />
+    </>
+  )
 }

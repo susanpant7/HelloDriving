@@ -5,6 +5,8 @@ import { layoutOf, nav, navJunctionExit, navUpdate, startRoute, turnName } from 
 import { WORLD } from './course'
 import { REAL, keepLoadedAlong, keepLoadedAround, loadedAt } from '../real/load'
 import { ROUTE, followRoute, resetProgress, routeAt, routeStart } from '../real/route'
+import { initRealTraffic, stepRealTraffic } from '../real/realTraffic'
+import { lightFor } from '../real/signals'
 import { junctionsNear, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
 import { HW, CITY, MIXED_ROAD, NL, firstStage, hwRoute, SPAWN_Z, forkCurve, ACC_LEN, hC, toRoadX, toWorldX, forkShift, laneAt, makeStage, nearestLane, rampHeading, rampNear, rampX, type Ramp, rampU, routeName, splitX, unshiftX, onRoadW as hwOnRoad, recoverPose, startPose, type Route, type Stage } from '../highway/layout'
 import { initHighwayTraffic, resetJoins, setHighwayCount, shiftHighwayTraffic, stepHighwayTraffic, unwarpAll, warpAll } from '../highway/traffic'
@@ -410,7 +412,7 @@ let arrowHeld = 0 // how long a steering arrow has been held
  */
 const swap = { dir: 0, lat: 0, t: 0 }
 /** real places, STOP signs: the stop line ahead on your road, your lowest speed over the last 15 m before it, judged as you cross it */
-const realStop = { key: '', minV: 99, prevD: Infinity, done: false }
+const realStop = { key: '', minV: 99, prevD: Infinity, done: false, creditRed: false, red: null as null | { j: number; h: number; t: number; stopped: boolean } }
 /** real places: when the map round the car was last topped up, and whether the car is waiting for the map ahead to arrive */
 const realLoad = { t: 0, waiting: false, toldT: -99 }
 function startSwap(dir: -1 | 1) {
@@ -460,7 +462,7 @@ export function resetSim(keepScore = false, stage?: Stage) {
   // the highway course is its own flat world (no wrapping); the grid city repeats every 800 m
   WORLD.highway = useGame.getState().mode === 'highway' || (useGame.getState().mode === 'mixed' && useGame.getState().leg === 'highway')
   WORLD.real = useGame.getState().mode === 'real'
-  realStop.key = ''
+  realStop.key = ''; realStop.red = null
   autoCentre.on = false
   handSteerT = -99
   swap.dir = 0
@@ -486,7 +488,7 @@ export function resetSim(keepScore = false, stage?: Stage) {
   input.free = false
   input.yaw = input.pitch = 0
   if (WORLD.highway) { setHighwayCount(useGame.getState().traffic); initHighwayTraffic(pose.z, pose.x); resetJoins() }
-  else if (WORLD.real) { for (const c of cars) c.active = false } // (no traffic in real places yet)
+  else if (WORLD.real) initRealTraffic({ x: pose.x, z: pose.z, h: pose.h, speed: 0, dir: 1 })
   else initTraffic()
   applyTraffic()
 }
@@ -910,7 +912,8 @@ export function stepSim(dt: number) {
   // the Mixed course: the amount of traffic follows the district you are driving in (re-checked every couple of seconds)
   if (!WORLD.highway && useGame.getState().mode === 'mixed' && (trafficCheckT += dt) > 2) { trafficCheckT = 0; setTrafficTarget(trafficHere()) }
   if (WORLD.highway) stepHighwayTraffic(dt, sim.t, playerObs())
-  else if (!WORLD.real) stepTraffic(dt, sim.t, playerObs())
+  else if (WORLD.real) stepRealTraffic(dt, sim.t, { x: sim.x, z: sim.z, h: sim.h, speed: sim.speed, dir: sim.dir })
+  else stepTraffic(dt, sim.t, playerObs())
   for (const c of cars) {
     if (c.active && hits(c)) return crashInto(c)
   }
@@ -1433,18 +1436,39 @@ function realNav(dt: number) {
 function trackRealStop() {
   const m = REAL.map
   if (!m) return
+  // a right turn on red: judged once you are out of the junction (allowed after a full stop; going straight or left is not)
+  const rr = realStop.red
+  if (rr) {
+    const j = m.junctions[rr.j]
+    if (!j || Math.hypot(sim.x - j.x, sim.z - j.z) > j.r + 6 || sim.t - rr.t > 12) {
+      realStop.red = null
+      const turned = normAngle(sim.h - rr.h) // (- = to the right)
+      if (rr.stopped && turned < -0.7) good('Right turn on red, after a full stop')
+      else say(rr.stopped ? 'You went through a red light: only a right turn is allowed on red, after stopping' : 'You ran a red light', 'warn')
+    }
+  }
+  if (sim.dir < 0) return // (backing up)
   const r = roadAt(m, sim.x, sim.z)
   if (!r) return
   const along = r.dx * -Math.sin(sim.h) + r.dz * -Math.cos(sim.h)
   if (Math.abs(along) < 0.5) return // (across the road: turning, or crossing a junction)
   const toB = along > 0
   const j = m.junctions[toB ? r.e.b : r.e.a]
-  if (j.ctl.get(r.e.id) !== 'stop') { realStop.key = ''; return }
+  const ctl = j.ctl.get(r.e.id)
+  if (ctl !== 'stop' && ctl !== 'signal') { realStop.key = ''; return }
   const key = `${r.e.id}:${toB}`
   const dLine = (toB ? r.e.len - r.s : r.s) - (j.r + 1.2) // how far the stop line is ahead
-  if (realStop.key !== key) { realStop.key = key; realStop.minV = 99; realStop.prevD = dLine; realStop.done = false }
+  if (realStop.key !== key) { realStop.key = key; realStop.minV = 99; realStop.prevD = dLine; realStop.done = false; realStop.creditRed = false }
   if (dLine < 15 && dLine > -3) realStop.minV = Math.min(realStop.minV, sim.speed)
-  if (!realStop.done && realStop.prevD > 0 && dLine <= 0) {
+  if (ctl === 'signal') {
+    const light = lightFor(m, j, r.e.id, sim.t)
+    // stopped at the line for a red light
+    if (light === 'R' && !realStop.creditRed && sim.speed < 0.3 && dLine > -1 && dLine < 6) { realStop.creditRed = true; good('Stopped for the red light') }
+    if (!realStop.done && realStop.prevD > 0 && dLine <= 0) {
+      realStop.done = true
+      if (light === 'R') realStop.red = { j: j.id, h: sim.h, t: sim.t, stopped: realStop.minV < 0.3 }
+    }
+  } else if (!realStop.done && realStop.prevD > 0 && dLine <= 0) {
     realStop.done = true
     const what = j.allWay ? 'the all-way STOP sign' : 'the STOP sign'
     if (realStop.minV < 0.3) good(`Full stop at ${what}`)
@@ -1524,4 +1548,4 @@ function syncHud() {
 }
 
 // handy for debugging in the browser console
-if (typeof window !== 'undefined') Object.assign(window, { __resetSim: resetSim, __sim: sim, __cars: cars, __why: (c: AiCar) => whyStuck(c, sim.t, playerObs()), __step: stepSim, __input: input, __start: startGame, __store: useGame, __resume: resumeGame, __onRoad: onAsphalt, __pieces: PIECES, __signal: signalColor, __nodeIndex: nodeIndex, __links: LINKS, __nav: nav, __world: WORLD, __legs: { enterHighway, leaveHighway }, __laneInfo: () => laneInfo(), __laneTarget: () => laneTarget(), __hw: HW, __hwState: hw, __ramp: rampAt, __navfn: { startRoute, navUpdate, navJunctionExit } })
+if (typeof window !== 'undefined') Object.assign(window, { __resetSim: resetSim, __stepSim: stepSim, __sim: sim, __cars: cars, __why: (c: AiCar) => whyStuck(c, sim.t, playerObs()), __step: stepSim, __input: input, __start: startGame, __store: useGame, __resume: resumeGame, __onRoad: onAsphalt, __pieces: PIECES, __signal: signalColor, __nodeIndex: nodeIndex, __links: LINKS, __nav: nav, __world: WORLD, __legs: { enterHighway, leaveHighway }, __laneInfo: () => laneInfo(), __laneTarget: () => laneTarget(), __hw: HW, __hwState: hw, __ramp: rampAt, __navfn: { startRoute, navUpdate, navJunctionExit } })
