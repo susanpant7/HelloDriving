@@ -179,16 +179,26 @@ export function City() {
     const atlasCanvas = makeAtlas(useGame.getState().units)
     const atlas = new THREE.CanvasTexture(atlasCanvas)
     atlas.colorSpace = THREE.SRGBColorSpace
-    atlas.anisotropy = Math.min(8, maxAniso)
+    atlas.anisotropy = Math.min(16, maxAniso)
     const fc = facadeCanvases()
     const tex = (cv: HTMLCanvasElement, srgb: boolean) => {
       const t = new THREE.CanvasTexture(cv)
       t.wrapS = t.wrapT = THREE.RepeatWrapping
-      t.anisotropy = Math.min(8, maxAniso)
+      t.anisotropy = Math.min(16, maxAniso)
       if (srgb) t.colorSpace = THREE.SRGBColorSpace
       return t
     }
     const facade = tex(fc.color, true)
+    // Sign faces are double-sided so the sign's shape shows from behind, but the back of a real sign is bare grey
+    // aluminium: keep the texture's alpha (the octagon / triangle / rectangle outline) and drop its colours and lettering.
+    const signMat = new THREE.MeshStandardMaterial({ map: atlas, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.55 })
+    signMat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace(
+        '#include <map_fragment>',
+        '#include <map_fragment>\n  if (!gl_FrontFacing) diffuseColor.rgb = vec3(0.42, 0.44, 0.46);',
+      )
+    }
+    signMat.customProgramCacheKey = () => 'sign-plain-back'
     return {
       atlasCanvas,
       atlas,
@@ -197,7 +207,7 @@ export function City() {
       marks: new THREE.MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }), // (flat bright paint: as clear in shade and far away as in sun)
       solid: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.1 }),
       buildings: new THREE.MeshStandardMaterial({ map: facade, roughnessMap: tex(fc.rough, false), metalnessMap: tex(fc.metal, false), roughness: 1, metalness: 1, vertexColors: true, envMapIntensity: 1.3 }),
-      signs: new THREE.MeshStandardMaterial({ map: atlas, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.55 }),
+      signs: signMat,
     }
   }, [maxAniso])
   void ATLAS_W; void ATLAS_H

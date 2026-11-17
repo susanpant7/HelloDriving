@@ -14,6 +14,8 @@ export interface Quality {
   mirrorMax: number
   sideAlt: boolean
   rearAlt: boolean
+  /** the mirrors also show the scenery (trees, houses, buildings), as real mirrors do */
+  mirrorScenery: boolean
   /** how far you can see (m), and where the haze starts */
   far: number
   fogNear: number
@@ -21,9 +23,10 @@ export interface Quality {
   treeNear: number
 }
 export const QUALITY: Record<Graphics, Quality> = {
-  high: { dpr: 1.5, fx: 'full', mirrorScale: 2, mirrorMax: 3000, sideAlt: false, rearAlt: false, far: 460, fogNear: 280, treeNear: 110 },
-  medium: { dpr: 1.25, fx: 'light', mirrorScale: 1.5, mirrorMax: 2000, sideAlt: false, rearAlt: true, far: 400, fogNear: 240, treeNear: 80 },
-  low: { dpr: 1, fx: 'none', mirrorScale: 1.15, mirrorMax: 1200, sideAlt: true, rearAlt: true, far: 320, fogNear: 190, treeNear: 55 },
+  // (high renders at the screen's full pixel density, e.g. 2x on a Retina display: anything less is upscaled and looks soft)
+  high: { dpr: 2, fx: 'full', mirrorScale: 2, mirrorMax: 3200, sideAlt: false, rearAlt: false, mirrorScenery: true, far: 560, fogNear: 380, treeNear: 120 },
+  medium: { dpr: 1.5, fx: 'light', mirrorScale: 1.6, mirrorMax: 2200, sideAlt: false, rearAlt: true, mirrorScenery: false, far: 440, fogNear: 290, treeNear: 85 },
+  low: { dpr: 1, fx: 'none', mirrorScale: 1.15, mirrorMax: 1200, sideAlt: true, rearAlt: true, mirrorScenery: false, far: 320, fogNear: 190, treeNear: 55 },
 }
 /** the current level's settings (read every frame: changing the setting takes effect at once) */
 export const quality = () => QUALITY[useGame.getState().graphics]

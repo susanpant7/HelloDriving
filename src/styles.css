@@ -477,8 +477,17 @@ canvas { touch-action: none; }
 .hud.touch .tleft { flex-direction: column; align-items: center; gap: clamp(6px, 1.8vh, 10px); }
 .hud.touch .tleft > .eye { order: 0; }
 .hud.touch .tleft .sigpod { order: 1; }
-.hud.touch .tleft .steerpod { order: 2; }
+.hud.touch .tleft .swheel { order: 2; }
 .hud.touch .tbtn.lanekeep.lanemid {
   position: fixed; right: max(12px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); z-index: 2;
 }
 .hud.touch .tbtn.lanekeep.lanemid:active { transform: translateY(-50%) scale(.94); }
+
+/* touch: the on-screen steering wheel (turn it round with a finger) */
+.swheel {
+  pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  width: clamp(104px, 30vh, 150px); height: clamp(104px, 30vh, 150px); border-radius: 50%;
+  color: rgba(255,255,255,.88); background: rgba(255,255,255,.04);
+}
+.swheel svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+.swheel.on { color: #fff; background: rgba(59,130,246,.18); }

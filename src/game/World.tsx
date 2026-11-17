@@ -58,7 +58,7 @@ export function Ground() {
       const t = loader.load(`/tex/grass_${suffix}.jpg`)
       t.wrapS = t.wrapT = THREE.RepeatWrapping
       t.repeat.set(SIZE / TILE, SIZE / TILE)
-      t.anisotropy = Math.min(8, maxAniso)
+      t.anisotropy = Math.min(16, maxAniso)
       if (srgb) t.colorSpace = THREE.SRGBColorSpace
       return t
     }

@@ -258,10 +258,11 @@ export class MirrorGlass extends THREE.Mesh {
     const v = this.vcam
     v.position.copy(_Ev)
     v.quaternion.setFromRotationMatrix(_M)
-    // the mirrors show the road and the traffic (no scenery: layer 4); light mirrors also skip road wear (layer 3) and only see ~200 m
+    // the mirrors show the road and the traffic (scenery, layer 4, only on high graphics); light mirrors also skip road wear (layer 3) and only see ~200 m
     const lite = useGame.getState().mirrorLite
     v.far = lite ? Math.min(200, (camera as THREE.PerspectiveCamera).far) : (camera as THREE.PerspectiveCamera).far
     v.layers.set(0); v.layers.enable(2); if (!lite) v.layers.enable(3)
+    if (!lite && q.mirrorScenery) v.layers.enable(4) // (high graphics: trees, houses and buildings show in the mirrors too)
     v.updateMatrixWorld(true)
 
     // off-axis frustum through the glass window (scaled by `wide` for the convex look)

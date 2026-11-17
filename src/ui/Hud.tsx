@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { gasTapFn, recentreView, setMotionLook, steerTap } from '../game/input'
+import { gasTapFn, recentreView, setMotionLook } from '../game/input'
 import { MODES, type Mode } from '../game/nav'
 import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal } from '../game/sim'
 import type { RbDiag, RbPath } from '../game/store'
 import { HW_TOTAL } from '../highway/traffic'
 import { setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
 import { MapOverlay } from './MapOverlay'
-import { EyeControl } from './TouchPad'
+import { EyeControl, SteerWheel } from './TouchPad'
 import { useViewport } from './useViewport'
 
 const Key = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>
@@ -159,14 +159,9 @@ function HoldButton({ label, onDown, onUp, className = '', active = false, child
 }
 
 /**
- * On-screen controls for phones and tablets. Bottom left, stacked: the eye (slide to look around), the indicators, steer left/right.
+ * On-screen controls for phones and tablets. Bottom left, stacked: the eye (slide to look around), the indicators, the steering wheel.
  * Right: lane assist in the middle of the edge; brake and gas at the bottom.
  */
-const Chev = ({ dir }: { dir: -1 | 1 }) => (
-  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" style={{ transform: dir === 1 ? 'scaleX(-1)' : undefined }}>
-    <path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-)
 const TurnArrow = ({ dir }: { dir: -1 | 1 }) => (
   <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style={{ transform: dir === 1 ? 'scaleX(-1)' : undefined }}>
     <path d="M10 5 3 12l7 7V15h11V9H10z" fill="currentColor" />
@@ -190,10 +185,7 @@ function TouchControls() {
           <HoldButton label="Left indicator" className={`sig${signal === -1 ? ' blink' : ''}`} active={signal === -1} onDown={() => toggleSignal(-1)} onUp={() => {}}><TurnArrow dir={-1} /></HoldButton>
           <HoldButton label="Right indicator" className={`sig${signal === 1 ? ' blink' : ''}`} active={signal === 1} onDown={() => toggleSignal(1)} onUp={() => {}}><TurnArrow dir={1} /></HoldButton>
         </div>
-        <div className="pod steerpod">
-          <HoldButton label="Steer left" className="steer" onDown={() => { input.left = true; steerTap(-1) }} onUp={() => { input.left = false }}><Chev dir={-1} /></HoldButton>
-          <HoldButton label="Steer right" className="steer" onDown={() => { input.right = true; steerTap(1) }} onUp={() => { input.right = false }}><Chev dir={1} /></HoldButton>
-        </div>
+        <SteerWheel />
       </div>
 
       <div className="tgroup center" />
@@ -256,7 +248,7 @@ function TouchHelp() {
   return (
     <ul className="controls">
       <li><span><b>Gas / Brake</b></span> Pedals at the bottom right. Hold gas to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop</li>
-      <li><span><b>Steer</b></span> Bottom left: hold ◀ ▶ to keep turning the wheel; let go and it returns to straight. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
+      <li><span><b>Steer</b></span> Bottom left: put a finger on the wheel and turn it round, like a real wheel; the car steers as far as you turn it, and when you let go the wheel returns to straight. Two quick little nudges the same way change lane. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
       <li><span><b>Eye</b></span> Above the steering: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
       <li><span><b>⬅ ➡</b></span> Right of the steering: left indicator (top) and right indicator (bottom). Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
     </ul>

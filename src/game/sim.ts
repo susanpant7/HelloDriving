@@ -34,6 +34,8 @@ export const input = {
   down: false,
   left: false,
   right: false,
+  /** on-screen steering wheel (phones): where the finger holds the wheel, -1 .. 1 (null = not held: the wheel returns to straight) */
+  wheel: null as number | null,
   /** touch free-look: head turn (rad, + = left) and tilt (rad, + = up), used while `free` is true */
   free: false,
   /** set by a double tap of an arrow key: -1 = move one lane left, 1 = one lane right */
@@ -467,7 +469,7 @@ export function resetSim(keepScore = false, stage?: Stage) {
     laneAssist: keepScore ? sim.laneAssist : false, laneActive: false, // (it stays on when the mixed course moves between town and highway)
   })
   input.look = 'front'
-  input.up = input.down = input.left = input.right = false
+  input.up = input.down = input.left = input.right = false; input.wheel = null
   input.free = false
   input.yaw = input.pitch = 0
   if (WORLD.highway) { setHighwayCount(useGame.getState().traffic); initHighwayTraffic(pose.z, pose.x); resetJoins() }
@@ -508,14 +510,14 @@ export function startGame() {
 
 export function goMenu() {
   input.look = 'front'
-  input.up = input.down = input.left = input.right = false
+  input.up = input.down = input.left = input.right = false; input.wheel = null
   useGame.setState({ status: 'menu', pauseReason: 'user', adjusting: false })
 }
 
 export function pauseGame() {
   if (useGame.getState().status !== 'playing') return
   input.look = 'front'
-  input.up = input.down = input.left = input.right = false
+  input.up = input.down = input.left = input.right = false; input.wheel = null
   input.free = false
   input.yaw = input.pitch = 0
   useGame.setState({ status: 'paused', pauseReason: 'user' })
@@ -580,7 +582,7 @@ function recoverToRoad() {
 
 function pauseOffRoad() {
   input.look = 'front'
-  input.up = input.down = input.left = input.right = false
+  input.up = input.down = input.left = input.right = false; input.wheel = null
   useGame.setState({ status: 'paused', pauseReason: 'offroad' })
 }
 
@@ -654,7 +656,9 @@ export function stepSim(dt: number) {
   // steering by hand: with lane assist on, only an arrow held for a moment counts (quick taps, and a double tap asking for a lane
   // change, leave it steering)
   if (input.left || input.right) arrowHeld += dt; else arrowHeld = 0
-  const handSteer = sim.laneAssist ? arrowHeld > 0.25 : input.left || input.right
+  // (the on-screen wheel counts as steering once it is actually turned, so resting a finger on it leaves lane assist steering)
+  const wheelHeld = input.wheel !== null && Math.abs(input.wheel) > 0.04
+  const handSteer = wheelHeld || (sim.laneAssist ? arrowHeld > 0.25 : input.left || input.right)
   if (handSteer) { handSteerT = sim.t; swap.dir = 0 }
   if (!sim.laneAssist) swap.dir = 0
   if (sim.laneAssist && !autoLane.on && !autoCentre.on && !handSteer && sim.speed >= 1.5 && sim.t - handSteerT > 0.5) {
@@ -664,7 +668,11 @@ export function stepSim(dt: number) {
   if (!autoLane.on && !autoCentre.on) {
     // the wheel keeps turning while an arrow (or the on-screen button) is held and springs back to straight when it is released
     const dirIn = (input.right ? 1 : 0) - (input.left ? 1 : 0)
-    if (dirIn) {
+    if (input.wheel !== null) {
+      // the on-screen wheel: the wheel is exactly where the finger turned it, and stays there while it is held
+      steerHold = 0; steerHoldDir = 0
+      sim.wheel = clamp(input.wheel, -1, 1)
+    } else if (dirIn) {
       // it answers at once and winds on faster the longer the key is held; steering back against the lock is quicker still
       steerHold = dirIn === steerHoldDir ? steerHold + dt : 0
       steerHoldDir = dirIn
@@ -706,7 +714,7 @@ export function stepSim(dt: number) {
       sim.h = autoLane.h0; sim.yawRate = 0; sim.steerIn = 0
       const dx = err * rxv, dz = err * rzv; sim.x += dx; sim.z += dz
     }
-    if (done || sim.speed < 1.5 || input.down || (autoLane.t > 0.6 && (input.left || input.right))) { autoLane.on = false; sim.wheel = done ? 0 : sim.wheel; target = sim.wheel }
+    if (done || sim.speed < 1.5 || input.down || (autoLane.t > 0.6 && (input.left || input.right || wheelHeld))) { autoLane.on = false; sim.wheel = done ? 0 : sim.wheel; target = sim.wheel }
   }
   if (autoCentre.on && !autoLane.on) {
     autoCentre.t += dt

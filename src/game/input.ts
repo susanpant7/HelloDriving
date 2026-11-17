@@ -175,6 +175,7 @@ export function installInput() {
     input.look = 'front'
     input.kA = input.kW = input.kD = input.kS = false
     input.up = input.down = input.left = input.right = false
+    input.wheel = null
     input.free = false
     input.yaw = input.pitch = 0
   }
