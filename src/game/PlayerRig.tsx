@@ -8,7 +8,7 @@ import { CARPLAY, EYE, GLASS, FRONT_PITCH, FRONT_YAW, adjust, mirrorAdj, mirrorS
 import { MirrorGlass, mirrorShape } from './mirrorGeom'
 import { input, sim } from './sim'
 import { renderPose } from './World'
-import { recentreView } from './input'
+import { recentreView, steerTap } from './input'
 import { useGame } from './store'
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -90,6 +90,7 @@ export function PlayerRig() {
   const wheel = useRef<THREE.Group>(null!)
   const view = useRef({ yaw: 0, pitch: 0, fov: 60.6, lean: new THREE.Vector3() })
   const tmp = useMemo(() => new THREE.Vector3(), [])
+  const seat = useMemo(() => new THREE.Vector3(), [])
   // body motion (smoothed): longitudinal / lateral acceleration felt by the driver's head
   const body = useRef({ lastSpeed: 0, lastH: 0, accel: 0, lat: 0, roll: 0, pitch: 0, sway: 0, bump: 0, fov: 0, init: false })
 
@@ -152,6 +153,75 @@ export function PlayerRig() {
       window.removeEventListener('pointercancel', up)
     }
   }, [])
+
+  // Steer with the car's own steering wheel: put a finger (or the mouse) on it and turn it round. The finger is followed in the plane
+  // of the wheel, so the wheel turns exactly as far as the finger goes round it (three turns lock to lock, like the real car).
+  // Let go and it returns to straight; grab it again within a moment and it is still where you left it (hand over hand).
+  const gl = useThree((st) => st.gl)
+  useEffect(() => {
+    const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane(), hit = new THREE.Vector3()
+    const inv = new THREE.Matrix4(), n = new THREE.Vector3(), o = new THREE.Vector3()
+    const TURN = Math.PI * 2 * 1.5 // wheel angle (rad) at full lock
+    let id = -1, last = 0, ang = 0, t0 = 0, peak = 0, letGo = 0
+    /** where the pointer is on the wheel: angle round the hub (rad, + = anticlockwise as the driver sees it) and distance from it (m) */
+    const onWheel = (e: PointerEvent) => {
+      const frame = wheel.current?.parent
+      if (!frame) return null
+      const r = gl.domElement.getBoundingClientRect()
+      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
+      ray.setFromCamera(ndc, camera)
+      frame.updateWorldMatrix(true, false)
+      o.setFromMatrixPosition(frame.matrixWorld)
+      n.set(0, 0, 1).transformDirection(frame.matrixWorld)
+      plane.setFromNormalAndCoplanarPoint(n, o)
+      if (!ray.ray.intersectPlane(plane, hit)) return null
+      hit.applyMatrix4(inv.copy(frame.matrixWorld).invert())
+      return { a: Math.atan2(hit.y, hit.x), d: Math.hypot(hit.x, hit.y) }
+    }
+    const down = (e: PointerEvent) => {
+      if (id !== -1 || (e.target as HTMLElement)?.tagName !== 'CANVAS' || useGame.getState().status !== 'playing') return
+      const w = onWheel(e)
+      if (!w || w.d > 0.3 || w.d < 0.03) return // the rim and spokes (about 19 cm round), with a little to spare for a fingertip
+      id = e.pointerId
+      last = w.a
+      clearTimeout(letGo)
+      ang = (input.wheel ?? sim.wheel) * TURN // pick it up where it is (also mid-way back to straight)
+      input.wheel = ang / TURN
+      t0 = performance.now(); peak = 0
+    }
+    const move = (e: PointerEvent) => {
+      if (e.pointerId !== id) return
+      const w = onWheel(e)
+      if (!w || w.d < 0.03) return // over the very middle the angle jumps about
+      let d = w.a - last
+      if (d > Math.PI) d -= Math.PI * 2
+      else if (d < -Math.PI) d += Math.PI * 2
+      last = w.a
+      ang = Math.max(-TURN, Math.min(TURN, ang - d)) // clockwise (as the driver sees it) = right
+      if (Math.abs(ang) > Math.abs(peak)) peak = ang
+      input.wheel = ang / TURN
+    }
+    const up = (e: PointerEvent) => {
+      if (e.pointerId !== id) return
+      id = -1
+      // two quick little nudges the same way ask for a lane change (as a double tap of an arrow key does)
+      const nudge = performance.now() - t0 < 300 && Math.abs(peak) > 0.1 && Math.abs(peak) < 1.2
+      if (nudge) { input.wheel = null; steerTap(peak > 0 ? 1 : -1); return }
+      letGo = window.setTimeout(() => { if (id === -1) input.wheel = null }, 350)
+    }
+    window.addEventListener('pointerdown', down)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => {
+      clearTimeout(letGo)
+      input.wheel = null
+      window.removeEventListener('pointerdown', down)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
+  }, [camera, gl])
 
   // pressing the CarPlay screen (an invisible button over it) recentres the view
   const cpRect = useRef({ x0: 0, x1: 0, y0: 0, y1: 0, ok: false })
@@ -249,7 +319,7 @@ export function PlayerRig() {
     bd.bump = 0 // no heave: the view stays steady, it must not bob up and down
     bd.fov += ((sim.speed / 30) * 5 - bd.fov) * (1 - Math.exp(-2 * dt)) // the world opens up a little at speed
     const bodyOn = crashed ? 0 : 1
-    tmp.copy(EYE).add(v.lean).add(new THREE.Vector3(bd.sway * bodyOn, bd.bump * 6 * bodyOn, bd.pitch * -0.5 * bodyOn)).applyAxisAngle(UP, renderPose.h).add(g.position)
+    tmp.copy(EYE).add(v.lean).add(seat.set(vo.x, vo.y, vo.z)).add(new THREE.Vector3(bd.sway * bodyOn, bd.bump * 6 * bodyOn, bd.pitch * -0.5 * bodyOn)).applyAxisAngle(UP, renderPose.h).add(g.position)
     camera.position.copy(tmp)
 
     let shake = 0

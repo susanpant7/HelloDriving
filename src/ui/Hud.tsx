@@ -4,9 +4,9 @@ import { MODES, type Mode } from '../game/nav'
 import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal } from '../game/sim'
 import type { RbDiag, RbPath } from '../game/store'
 import { HW_TOTAL } from '../highway/traffic'
-import { setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
+import { VIEW0, type ViewOffset, setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
 import { MapOverlay } from './MapOverlay'
-import { EyeControl, SteerWheel } from './TouchPad'
+import { EyeControl } from './TouchPad'
 import { useViewport } from './useViewport'
 
 const Key = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>
@@ -159,7 +159,7 @@ function HoldButton({ label, onDown, onUp, className = '', active = false, child
 }
 
 /**
- * On-screen controls for phones and tablets. Bottom left, stacked: the eye (slide to look around), the indicators, the steering wheel.
+ * On-screen controls for phones and tablets. Bottom left, stacked: the eye (slide to look around), the indicators. Steer with the car's own steering wheel.
  * Right: lane assist in the middle of the edge; brake and gas at the bottom.
  */
 const TurnArrow = ({ dir }: { dir: -1 | 1 }) => (
@@ -178,14 +178,13 @@ function TouchControls() {
   const hold = (key: 'up' | 'down') => ({ onDown: () => { input[key] = true }, onUp: () => { input[key] = false } })
   return (
     <div className="touch-controls" onContextMenu={(e) => e.preventDefault()}>
-      {/* bottom left, stacked: the eye on top, the indicators under it, the steering at the bottom */}
+      {/* bottom left, stacked: the eye on top, the indicators under it (steering: the car's own wheel) */}
       <div className="tleft">
         <EyeControl />
         <div className="pod sigpod">
           <HoldButton label="Left indicator" className={`sig${signal === -1 ? ' blink' : ''}`} active={signal === -1} onDown={() => toggleSignal(-1)} onUp={() => {}}><TurnArrow dir={-1} /></HoldButton>
           <HoldButton label="Right indicator" className={`sig${signal === 1 ? ' blink' : ''}`} active={signal === 1} onDown={() => toggleSignal(1)} onUp={() => {}}><TurnArrow dir={1} /></HoldButton>
         </div>
-        <SteerWheel />
       </div>
 
       <div className="tgroup center" />
@@ -213,31 +212,68 @@ function FadeCard() {
   )
 }
 
-/** Set your default view: drag anywhere (finger or mouse) to turn and tilt the resting view; it is saved for next time. */
+/**
+ * Set your default view, saved for next time.
+ *  - one finger (or the mouse): drag to turn and tilt the resting view
+ *  - two fingers: drag to move the whole car in the picture (left / right / up / down: your head moves in the seat), pinch to sit
+ *    closer to or further from the windscreen
+ */
 function ViewAdjust() {
   const vo = useGame((s) => s.viewOffset)
-  const last = useRef<{ x: number; y: number } | null>(null)
-  const clampV = (v: { yaw: number; pitch: number }) => ({ yaw: Math.max(-0.5, Math.min(0.5, v.yaw)), pitch: Math.max(-0.35, Math.min(0.35, v.pitch)) })
+  const pts = useRef(new Map<number, { x: number; y: number }>())
+  const prev = useRef<{ x: number; y: number; d: number; n: number } | null>(null)
+  const clampV = (v: ViewOffset): ViewOffset => ({
+    yaw: Math.max(-0.5, Math.min(0.5, v.yaw)), pitch: Math.max(-0.35, Math.min(0.35, v.pitch)),
+    x: Math.max(-0.22, Math.min(0.22, v.x)), y: Math.max(-0.14, Math.min(0.14, v.y)), z: Math.max(-0.2, Math.min(0.2, v.z)),
+  })
+  /** the centre of the fingers, how far apart they are (two fingers) and how many there are */
+  const gesture = () => {
+    const p = [...pts.current.values()]
+    if (!p.length) return null
+    if (p.length === 1) return { x: p[0].x, y: p[0].y, d: 0, n: 1 }
+    const [a, b] = p
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y), n: 2 }
+  }
+  const lift = (e: PointerEvent<HTMLDivElement>) => {
+    pts.current.delete(e.pointerId)
+    prev.current = gesture() // a finger lifted: carry on from the ones still down, without a jump
+    if (!pts.current.size) setViewOffset(useGame.getState().viewOffset)
+  }
+  const pct = (m: number) => Math.round(m * 100)
   return (
     <>
       <div
         className="viewdrag"
-        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); last.current = { x: e.clientX, y: e.clientY } }}
-        onPointerMove={(e) => {
-          if (!last.current) return
-          const dx = e.clientX - last.current.x, dy = e.clientY - last.current.y
-          last.current = { x: e.clientX, y: e.clientY }
-          const cur = useGame.getState().viewOffset
-          // drag the view like a picture: drag left to look further right, down to look up
-          setViewOffset(clampV({ yaw: cur.yaw + dx * 0.0025, pitch: cur.pitch + dy * 0.0025 }), false)
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId)
+          pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          prev.current = gesture()
         }}
-        onPointerUp={() => { last.current = null; setViewOffset(useGame.getState().viewOffset) }}
-        onPointerCancel={() => { last.current = null }}
+        onPointerMove={(e) => {
+          if (!pts.current.has(e.pointerId)) return
+          pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+          const g = gesture(), p = prev.current
+          prev.current = g
+          if (!g || !p || g.n !== p.n) return
+          const dx = g.x - p.x, dy = g.y - p.y
+          const cur = useGame.getState().viewOffset
+          if (g.n === 1) {
+            // one finger: drag the view like a picture (drag left to look further right, down to look up)
+            setViewOffset(clampV({ ...cur, yaw: cur.yaw + dx * 0.0025, pitch: cur.pitch + dy * 0.0025 }), false)
+          } else {
+            // two fingers: the car moves with them (drag right and the car slides right in the picture: your head moves left);
+            // spreading them brings you closer to the windscreen
+            const k = 0.0009
+            setViewOffset(clampV({ ...cur, x: cur.x - dx * k, y: cur.y + dy * k, z: cur.z - (g.d - p.d) * 0.0012 }), false)
+          }
+        }}
+        onPointerUp={lift}
+        onPointerCancel={lift}
       />
       <div className="adjbar high viewbar">
-        <span>Drag anywhere to aim your normal view ahead.</span>
-        <small className="muted">{Math.round((vo.yaw * 180) / Math.PI)}° · {Math.round((vo.pitch * 180) / Math.PI)}°</small>
-        <button className="secondary" onClick={() => setViewOffset({ yaw: 0, pitch: 0 })}>Reset</button>
+        <span>One finger: aim your view. Two fingers: move the car in the picture, pinch to sit closer.</span>
+        <small className="muted">{Math.round((vo.yaw * 180) / Math.PI)}° · {Math.round((vo.pitch * 180) / Math.PI)}° · seat {pct(vo.x)}/{pct(vo.y)}/{pct(vo.z)} cm</small>
+        <button className="secondary" onClick={() => setViewOffset(VIEW0)}>Reset</button>
         <button className="primary" onClick={() => { setViewOffset(useGame.getState().viewOffset); useGame.setState({ viewAdjusting: false }) }}>Done</button>
       </div>
     </>
@@ -248,9 +284,9 @@ function TouchHelp() {
   return (
     <ul className="controls">
       <li><span><b>Gas / Brake</b></span> Pedals at the bottom right. Hold gas to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop</li>
-      <li><span><b>Steer</b></span> Bottom left: put a finger on the wheel and turn it round, like a real wheel; the car steers as far as you turn it, and when you let go the wheel returns to straight. Two quick little nudges the same way change lane. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
-      <li><span><b>Eye</b></span> Above the steering: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
-      <li><span><b>⬅ ➡</b></span> Right of the steering: left indicator (top) and right indicator (bottom). Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
+      <li><span><b>Steer</b></span> Put a finger on the car's steering wheel and turn it round, like a real wheel: the car steers as far as you turn it. Let go and it returns to straight (grab it again quickly to go hand over hand). Two quick little nudges the same way change lane. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
+      <li><span><b>Eye</b></span> Bottom left: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
+      <li><span><b>⬅ ➡</b></span> Under the eye: left and right indicator. Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
     </ul>
   )
 }

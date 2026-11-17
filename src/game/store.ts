@@ -1,4 +1,9 @@
 import { IS_COARSE } from './device'
+/** your own default view: the resting view turned (yaw, rad, + = left) and tilted (pitch, rad, + = up), and your head moved in the seat
+ *  (metres: x = right, y = up, z = back), so the whole car sits a little left / right / higher / lower / closer in the picture */
+export interface ViewOffset { yaw: number; pitch: number; x: number; y: number; z: number }
+export const VIEW0: ViewOffset = { yaw: 0, pitch: 0, x: 0, y: 0, z: 0 }
+
 export type Graphics = 'high' | 'medium' | 'low'
 import { create } from 'zustand'
 import type { Mode } from './nav'
@@ -67,7 +72,7 @@ interface GameState {
   /** light mirrors: the mirrors skip road wear and only draw about 200 m behind you (cheaper; nothing you drive by is lost) */
   mirrorLite: boolean
   /** your own resting view: how far it is turned (yaw, + = left) and tilted (pitch, + = up) from the standard one (radians) */
-  viewOffset: { yaw: number; pitch: number }
+  viewOffset: ViewOffset
   /** paused and setting the default view by dragging */
   viewAdjusting: boolean
   pauseReason: 'user' | 'offroad'
@@ -141,7 +146,7 @@ export const useGame = create<GameState>(() => ({
   motionSens: load<1 | 2 | 3 | 4 | 5>('driveme.motion', 3, (v) => [1, 2, 3, 4, 5].includes(v as number)),
   mirrorLite: load<boolean>('driveme.mirrorLite', false, (v) => v === true || v === false),
   graphics: load<Graphics>('driveme.gfx', IS_COARSE ? 'medium' : 'high', (v) => v === 'high' || v === 'medium' || v === 'low'),
-  viewOffset: load<{ yaw: number; pitch: number }>('driveme.view', { yaw: 0, pitch: 0 }, (v) => !!v && typeof (v as { yaw: unknown }).yaw === 'number' && typeof (v as { pitch: unknown }).pitch === 'number'),
+  viewOffset: { ...VIEW0, ...load<Partial<ViewOffset>>('driveme.view', VIEW0, (v) => !!v && typeof (v as { yaw: unknown }).yaw === 'number' && typeof (v as { pitch: unknown }).pitch === 'number') },
   viewAdjusting: false,
   traffic: load<1 | 2 | 3 | 4 | 5>('driveme.traffic', 3, (v) => [1, 2, 3, 4, 5].includes(v as number)),
 }))
@@ -154,7 +159,7 @@ export const setLookMode = (m: 'eye' | 'motion') => {
   save('driveme.look', m)
   useGame.setState({ lookMode: m })
 }
-export const setViewOffset = (v: { yaw: number; pitch: number }, persist = true) => {
+export const setViewOffset = (v: ViewOffset, persist = true) => {
   if (persist) save('driveme.view', v)
   useGame.setState({ viewOffset: v })
 }
