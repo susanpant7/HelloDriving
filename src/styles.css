@@ -442,13 +442,13 @@ canvas { touch-action: none; }
 .hud.touch .sigpod .tbtn.sig { width: clamp(40px, 11.5vh, 50px); height: clamp(40px, 11.5vh, 50px); }
 .hud.touch .sigpod .tbtn.sig svg { width: 22px; height: 22px; }
 .hud.touch .sigpod .tbtn.sig.on { background: rgba(34,197,94,.5); border-color: #7dffa0; color: #eafff0; }
-.hud.touch .tleft > .eye {
+.hud.touch .eye.anchored {
   width: clamp(54px, 15vh, 64px); height: clamp(44px, 12.5vh, 52px); border-radius: 999px;
   background: rgba(255,255,255,.05); border: 1.5px solid rgba(255,255,255,.32); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; color: rgba(255,255,255,.88);
 }
-.hud.touch .tleft > .eye svg { width: 32px; height: 20px; }
-.hud.touch .tleft > .eye small { font-size: 7.5px; }
-.hud.touch .tleft > .eye.on { background: rgba(59,130,246,.5); border-color: rgba(255,255,255,.7); }
+.hud.touch .eye.anchored svg { width: 32px; height: 20px; }
+.hud.touch .eye.anchored small { font-size: 7.5px; }
+.hud.touch .eye.anchored.on { background: rgba(59,130,246,.5); border-color: rgba(255,255,255,.7); }
 
 /* lane assist button: lit while lane assist is on, brighter while it is steering */
 .hud.touch .tbtn.lanekeep.on { background: rgba(59,130,246,.28); border-color: rgba(160,200,255,.85); }
@@ -475,13 +475,31 @@ canvas { touch-action: none; }
 
 /* touch: the lower-left controls stacked (eye, indicators, steering), lane assist in the middle of the right edge */
 .hud.touch .tleft { flex-direction: column; align-items: center; gap: clamp(6px, 1.8vh, 10px); }
-.hud.touch .tleft > .eye { order: 0; }
-.hud.touch .tleft .sigpod { order: 1; }
 .hud.touch .tleft .steerpod, .hud.touch .tleft .swheel { order: 2; }
-.hud.touch .tbtn.lanekeep.lanemid {
-  position: fixed; right: max(12px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); z-index: 2;
+.hud.touch .midright {
+  /* at the right edge, 40% of the way down (level with the indicators on the left) */
+  position: fixed; right: max(8px, env(safe-area-inset-right)); top: 40%; transform: translateY(-50%); z-index: 2;
+  display: flex; align-items: center; gap: clamp(8px, 2.2vh, 12px); pointer-events: none;
 }
-.hud.touch .tbtn.lanekeep.lanemid:active { transform: translateY(-50%) scale(.94); }
+.hud.touch .midright .tbtn { pointer-events: auto; }
+/* VIEW: back to your default view (a neutral grey, so it does not read as "on") */
+.hud.touch .tbtn.lanekeep.viewbtn { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.4); color: rgba(255,255,255,.9); }
+.hud.touch .tbtn.lanekeep.viewbtn:active { background: rgba(255,255,255,.3); }
+
+/* cruise control (left of Brake) and its ▲ ▼ set-speed buttons (shown while it is on) */
+.hud.touch .tbtn.cruisebtn {
+  min-width: 0; width: clamp(48px, 13vh, 58px); height: var(--pedal); padding: 0; border-radius: 13px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  background: rgba(255,255,255,.05); border: 1.5px solid rgba(255,255,255,.4); color: rgba(255,255,255,.88);
+}
+.hud.touch .tbtn.cruisebtn small { font-size: 7.5px; font-weight: 800; letter-spacing: .06em; }
+.hud.touch .tbtn.cruisebtn b { font-size: 15px; line-height: 1; }
+.hud.touch .tbtn.cruisebtn.on { background: rgba(34,197,94,.3); border-color: #7dffa0; color: #eafff0; }
+.hud.touch .tbtn.cruisebtn:active { transform: scale(.94); }
+.hud.touch .cruisepod { flex-direction: column; border-radius: 16px; gap: 4px; }
+.hud.touch .cruisepod .tbtn.cruisestep { width: clamp(34px, 9.5vh, 42px); height: clamp(30px, 8.5vh, 38px); border-radius: 10px; }
+.hud.touch .cruisepod .tbtn.cruisestep svg { width: 20px; height: 20px; }
+.hud.touch .cruisepod .tbtn.cruisestep:active { background: rgba(34,197,94,.5); transform: scale(.94); }
 
 
 /* touch: the small steering wheel (Settings → Steering → Wheel), drawn like the car's own wheel */
@@ -491,3 +509,34 @@ canvas { touch-action: none; }
 }
 .swheel svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
 .swheel.on { opacity: 1; }
+
+/* touch: the eye sits just left of the car's steering wheel (placed by script); the indicators at the left edge, 40% down */
+.hud.touch .eye.anchored { position: fixed; z-index: 2; pointer-events: auto; }
+.hud.touch .sigpod.sigleft { position: fixed; left: max(8px, env(safe-area-inset-left)); top: 40%; transform: translateY(-50%); z-index: 2; pointer-events: none; }
+
+/* touch buttons show icons, not words */
+.hud.touch .tbtn.pedal svg, .hud.touch .tbtn.lanekeep svg, .hud.touch .tbtn.cruisebtn svg { display: block; }
+.hud.touch .tbtn.pedal { display: grid; place-items: center; }
+.hud.touch .tbtn.cruisebtn.on svg { width: 17px; height: 17px; } /* (room for the set speed under it) */
+
+/* touch: the icon buttons (view, lane assist, cruise, brake, gas, the eye) have no border; a soft shadow on the icon keeps it
+   readable against a bright sky or road */
+.hud.touch .touch-controls .tbtn.pedal,
+.hud.touch .touch-controls .tbtn.lanekeep,
+.hud.touch .touch-controls .tbtn.cruisebtn,
+.hud.touch .touch-controls .eye { border-width: 0; }
+.hud.touch .touch-controls .tbtn.pedal svg,
+.hud.touch .touch-controls .tbtn.lanekeep svg,
+.hud.touch .touch-controls .tbtn.cruisebtn svg,
+.hud.touch .touch-controls .eye svg { filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.55)); }
+
+/* ...and the indicators and the arrow buttons (steering ◀ ▶, cruise ▲ ▼): no border on the buttons or on the pill round them */
+.hud.touch .touch-controls .pod.sigpod,
+.hud.touch .touch-controls .pod.steerpod,
+.hud.touch .touch-controls .pod.cruisepod { border-width: 0; }
+.hud.touch .touch-controls .pod .tbtn.sig,
+.hud.touch .touch-controls .pod .tbtn.steer,
+.hud.touch .touch-controls .pod .tbtn.cruisestep { border-width: 0; }
+.hud.touch .touch-controls .pod .tbtn.sig svg,
+.hud.touch .touch-controls .pod .tbtn.steer svg,
+.hud.touch .touch-controls .pod .tbtn.cruisestep svg { filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.55)); }

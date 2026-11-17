@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import { loadCarModel, type CarModel } from './carModel'
+import { WHEEL_HUB, loadCarModel, type CarModel } from './carModel'
 import { Cabin } from './Cabin'
 import { CarPlay } from './CarPlay'
-import { CARPLAY, EYE, GLASS, FRONT_PITCH, FRONT_YAW, adjust, mirrorAdj, mirrorScreen, saveMirrors, LOOK_TARGETS, MIRROR_AIM, MIRRORS, type MirrorCfg } from './cabinConfig'
+import { CARPLAY, EYE, wheelScreen, GLASS, FRONT_PITCH, FRONT_YAW, adjust, mirrorAdj, mirrorScreen, saveMirrors, LOOK_TARGETS, MIRROR_AIM, MIRRORS, type MirrorCfg } from './cabinConfig'
 import { MirrorGlass, mirrorShape } from './mirrorGeom'
 import { input, sim } from './sim'
 import { renderPose } from './World'
@@ -12,6 +12,7 @@ import { recentreTilt, recentreView } from './input'
 import { useGame } from './store'
 
 const UP = new THREE.Vector3(0, 1, 0)
+const WHEEL_RIM_L = new THREE.Vector3(-0.19, 0, 0) // (the rim is about 38 cm across)
 
 
 function useCarModel() {
@@ -91,6 +92,8 @@ export function PlayerRig() {
   const view = useRef({ yaw: 0, pitch: 0, fov: 60.6, lean: new THREE.Vector3() })
   const tmp = useMemo(() => new THREE.Vector3(), [])
   const seat = useMemo(() => new THREE.Vector3(), [])
+  const restCam = useMemo(() => new THREE.PerspectiveCamera(), [])
+  const wsT = useRef(1)
   // body motion (smoothed): longitudinal / lateral acceleration felt by the driver's head
   const body = useRef({ lastSpeed: 0, lastH: 0, accel: 0, lat: 0, roll: 0, pitch: 0, sway: 0, bump: 0, fov: 0, init: false })
 
@@ -189,16 +192,6 @@ export function PlayerRig() {
       e.x = (proj.x * 0.5 + 0.5) * size.width
       e.y = (-proj.y * 0.5 + 0.5) * size.height
       e.r = Math.max(30, (rad * size.height * 1.3) / Math.max(0.3, dist))
-      // the exact outline on screen: the glass's corners, grown a little for the housing round it
-      const m = MIRRORS[k === 'left' ? 0 : k === 'center' ? 1 : 2]
-      const b = e.box
-      b.x0 = b.y0 = Infinity; b.x1 = b.y1 = -Infinity
-      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-        proj.set(sx * m.size[0] * 0.62, sy * m.size[1] * 0.68, 0).applyQuaternion(m.quat).add(m.pos).applyAxisAngle(UP, renderPose.h).add(rig.current.position).project(camera)
-        if (proj.z > 1) e.ok = false
-        const px = (proj.x * 0.5 + 0.5) * size.width, py = (-proj.y * 0.5 + 0.5) * size.height
-        b.x0 = Math.min(b.x0, px); b.x1 = Math.max(b.x1, px); b.y0 = Math.min(b.y0, py); b.y1 = Math.max(b.y1, py)
-      }
     }
     const crashed = useGame.getState().status === 'crashed'
     const g = rig.current
@@ -271,6 +264,22 @@ export function PlayerRig() {
       v.yaw + renderPose.h + (shake ? (Math.random() - 0.5) * shake : 0),
       -sim.steer * 0.15 + bd.roll * bodyOn,
     )
+    // where the steering wheel sits on screen in the resting forward view (with your default view and seat settings), a few times a
+    // second: the eye control is placed just left of it
+    if ((wsT.current += dt) > 0.3) {
+      wsT.current = 0
+      const rc = restCam
+      rc.fov = LOOK_TARGETS.front.fov; rc.aspect = size.width / Math.max(1, size.height); rc.updateProjectionMatrix()
+      rc.position.set(EYE.x + vo.x, EYE.y + vo.y, EYE.z + vo.z)
+      rc.rotation.set(front.pitch, front.yaw, 0, 'YXZ')
+      rc.updateMatrixWorld()
+      const hub = proj.copy(WHEEL_HUB).project(rc)
+      const hy = (-hub.y * 0.5 + 0.5) * size.height
+      const rimL = proj.copy(WHEEL_HUB).add(WHEEL_RIM_L).project(rc) // the left of the rim
+      wheelScreen.ok = rimL.z < 1
+      wheelScreen.left = (rimL.x * 0.5 + 0.5) * size.width
+      wheelScreen.y = hy
+    }
     ;(window as unknown as { __view?: unknown }).__view = { yaw: v.yaw, pitch: v.pitch, fov: v.fov }
     // dev hook: window.__dbgCam = { p: [x, y, z], t: [x, y, z], fov } looks at the world from anywhere
     const dbg = (window as unknown as { __dbgCam?: { p: number[]; t: number[]; fov: number } }).__dbgCam

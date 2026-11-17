@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { gasTapFn, recentreView, setMotionLook, setTiltSteer, steerTap } from '../game/input'
 import { MODES, type Mode } from '../game/nav'
-import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal } from '../game/sim'
+import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, cruiseStep, toggleCruise, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal } from '../game/sim'
 import type { RbDiag, RbPath } from '../game/store'
 import { HW_TOTAL } from '../highway/traffic'
 import { VIEW0, type ViewOffset, setSteerMode, setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
 import { MapOverlay } from './MapOverlay'
-import { EyeControl, SteerWheel, useMirrorGuard } from './TouchPad'
+import { EyeControl, SteerWheel } from './TouchPad'
 import { useViewport } from './useViewport'
 
 const Key = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>
@@ -142,7 +142,8 @@ function ControlsList() {
       <li><span><Key>↑</Key></span> Accelerator <em>hold to speed up, release to slow down</em></li>
       <li><span><Key>↓</Key></span> Brake <em>like a real pedal: a tap slows you gently; the longer you hold it, the harder it brakes (firm after about a second, an emergency stop after about two)</em></li>
       <li><span><Key>←</Key><Key>→</Key></span> Steer <em>hold to keep turning the wheel; let go and it returns to straight</em></li>
-      <li><span><Key>Space</Key></span> Lane assist on / off <em>while on, the car keeps itself in the middle of its lane, even round bends and roundabouts ("LANE ASSIST" glows on the dashboard). It also returns the view to your default. Steering by hand overrides it; it takes over again when you let go</em></li>
+      <li><span><Key>C</Key></span> Lane assist on / off <em>while on, the car keeps itself in the middle of its lane, even round bends and roundabouts ("LANE ASSIST" glows on the dashboard). Steering by hand overrides it; it takes over again when you let go</em></li>
+      <li><span><Key>Space</Key></span> View back to your default <em>turns your head back to the road, to the view you set in the pause menu (Set default view)</em></li>
       <li><span><Key>Q</Key><Key>E</Key></span> Left / right indicator <em>press the same one again to switch it off; it also switches itself off when you steer the other way (the right one when you steer left of straight, the left one when you steer right)</em></li>
       <li><span>Drag</span> Look around <em>press and drag with the mouse, or swipe with two fingers on a trackpad (the view holds, tap to look ahead again); aim at a mirror to check it</em></li>
       <li><span><Key>A</Key><Key>D</Key><Key>W</Key><Key>S</Key></span> Turn your head <em>like the wheel: each press turns it a little and it stays (A left, D right, W up, S down; combine them, e.g. A + W). Double-press A or D to look over that shoulder into the blind spot (about 120°).</em></li>
@@ -175,14 +176,67 @@ function HoldButton({ label, onDown, onUp, className = '', active = false, child
 }
 
 /**
- * On-screen controls for phones and tablets. Bottom left, stacked: the eye (slide to look around), the indicators. Steer with the car's own steering wheel.
- * Right: lane assist in the middle of the edge; brake and gas at the bottom.
+ * On-screen controls for phones and tablets. Left edge: the indicators. Just left of the car's wheel: the eye (slide to look around). Bottom left: steering.
+ * Right: VIEW (back to your default view) and LANE (lane assist) at the edge, 40% down; cruise control, brake and gas at the bottom.
  */
-const Chev = ({ dir }: { dir: -1 | 1 }) => (
-  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" style={{ transform: dir === 1 ? 'scaleX(-1)' : undefined }}>
+const Chev = ({ dir, up, down }: { dir: -1 | 1; up?: boolean; down?: boolean }) => (
+  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" style={{ transform: up ? 'rotate(90deg)' : down ? 'rotate(-90deg)' : dir === 1 ? 'scaleX(-1)' : undefined }}>
     <path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 )
+/* ---- button icons (no words on the touch buttons) ---- */
+/** VIEW: back to your default view (a crosshair: "aim straight ahead") */
+const ViewIcon = () => (
+  <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <circle cx="12" cy="12" r="6.5" />
+    <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none" />
+    <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+  </svg>
+)
+/** LANE: a car between two lane lines (the lane-keeping symbol on a real dashboard) */
+const LaneIcon = () => (
+  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4.5 22 7.5 2M19.5 22 16.5 2" />
+    <path d="M9 17v-4.2l1.1-3.3h3.8l1.1 3.3V17M9 15h6" />
+    <path d="M9.4 17v1.6M14.6 17v1.6" />
+  </svg>
+)
+/** CRUISE: a speedometer with its needle */
+const CruiseIcon = () => (
+  <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M4.2 17.5a9 9 0 1 1 15.6 0" />
+    <path d="M12 14.5l4.5-4.5" />
+    <circle cx="12" cy="14.5" r="1.6" fill="currentColor" stroke="none" />
+    <path d="M7 9.5l.9.9M12 6.5v1.3" />
+  </svg>
+)
+/** a pedal: the brake wide and short, the accelerator tall and narrow (as in the car), with rubber ridges */
+const PedalIcon = ({ gas }: { gas?: boolean }) => (
+  <svg viewBox="0 0 24 24" width={gas ? 22 : 26} height={gas ? 28 : 22} aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    {gas ? (
+      <>
+        <rect x="7" y="2.5" width="10" height="19" rx="2.5" />
+        <path d="M10 7h4M10 10.5h4M10 14h4M10 17.5h4" />
+      </>
+    ) : (
+      <>
+        <rect x="3" y="6" width="18" height="12" rx="3" />
+        <path d="M7.5 10h9M7.5 14h9" />
+      </>
+    )}
+  </svg>
+)
+/** a button that does its step once when pressed and keeps repeating while it is held */
+function RepeatButton({ label, onStep, children }: { label: string; onStep: () => void; children: ReactNode }) {
+  const t = useRef(0)
+  const stop = () => { clearTimeout(t.current); clearInterval(t.current) }
+  useEffect(() => stop, [])
+  return (
+    <HoldButton label={label} className="cruisestep" onDown={() => { onStep(); stop(); t.current = window.setTimeout(() => { t.current = window.setInterval(onStep, 140) }, 450) }} onUp={stop}>
+      {children}
+    </HoldButton>
+  )
+}
 const TurnArrow = ({ dir }: { dir: -1 | 1 }) => (
   <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style={{ transform: dir === 1 ? 'scaleX(-1)' : undefined }}>
     <path d="M10 5 3 12l7 7V15h11V9H10z" fill="currentColor" />
@@ -193,6 +247,8 @@ function TouchControls() {
   const assist = useGame((s) => s.hud.assist)
   const lookMode = useGame((s) => s.lookMode)
   const steerMode = useGame((s) => s.steerMode)
+  const cruise = useGame((s) => s.hud.cruise)
+  const units = useGame((s) => s.units)
   useEffect(() => {
     if (lookMode === 'motion' && steerMode !== 'tilt') void setMotionLook(true)
     return () => { void setMotionLook(false) }
@@ -205,21 +261,23 @@ function TouchControls() {
     void setTiltSteer(true).then((ok) => { if (live && !ok) window.addEventListener('pointerdown', retry, { once: true }) })
     return () => { live = false; window.removeEventListener('pointerdown', retry); void setTiltSteer(false) }
   }, [steerMode])
-  // keep every control clear of the mirrors (they move with your view and seat settings)
-  const left = useRef<HTMLDivElement>(null), right = useRef<HTMLDivElement>(null), lane = useRef<HTMLButtonElement>(null)
-  useMirrorGuard(left, right, lane)
   const hold = (key: 'up' | 'down') => ({ onDown: () => { input[key] = true }, onUp: () => { input[key] = false } })
   return (
     <div className="touch-controls" onContextMenu={(e) => e.preventDefault()}>
-      {/* LANE: fixed in the middle of the right edge (kept outside the groups, which may be shrunk to clear the mirrors) */}
-      <button ref={lane} className={`tbtn lanekeep lanemid${assist ? ' on' : ''}${assist === 2 ? ' active' : ''}`} aria-pressed={assist > 0} aria-label="Lane assist (tap to switch on or off; also returns the view to your default)" onPointerDown={() => { input.laneToggle = true; recentreView() }}><span className="ring" /><small>LANE</small></button>
-      {/* bottom left, stacked: the eye on top, the indicators under it, the steering (wheel or arrows; none when tilting the phone) at the bottom */}
-      <div className="tleft" ref={left}>
-        <EyeControl />
-        <div className="pod sigpod">
-          <HoldButton label="Left indicator" className={`sig${signal === -1 ? ' blink' : ''}`} active={signal === -1} onDown={() => toggleSignal(-1)} onUp={() => {}}><TurnArrow dir={-1} /></HoldButton>
-          <HoldButton label="Right indicator" className={`sig${signal === 1 ? ' blink' : ''}`} active={signal === 1} onDown={() => toggleSignal(1)} onUp={() => {}}><TurnArrow dir={1} /></HoldButton>
-        </div>
+      {/* VIEW and LANE: at the right edge, 40% down  */}
+      <div className="midright">
+        <button className="tbtn lanekeep viewbtn" aria-label="View: back to your default view" onPointerDown={() => recentreView()}><ViewIcon /></button>
+        <button className={`tbtn lanekeep${assist ? ' on' : ''}${assist === 2 ? ' active' : ''}`} aria-pressed={assist > 0} aria-label="Lane assist (tap to switch on or off)" onPointerDown={() => { input.laneToggle = true }}><LaneIcon /></button>
+      </div>
+      {/* bottom left: the steering (wheel or arrows; none when tilting the phone) */}
+      {/* the eye: just left of the car's steering wheel */}
+      <EyeControl />
+      {/* indicators: at the left edge, 40% of the way down */}
+      <div className="pod sigpod sigleft">
+        <HoldButton label="Left indicator" className={`sig${signal === -1 ? ' blink' : ''}`} active={signal === -1} onDown={() => toggleSignal(-1)} onUp={() => {}}><TurnArrow dir={-1} /></HoldButton>
+        <HoldButton label="Right indicator" className={`sig${signal === 1 ? ' blink' : ''}`} active={signal === 1} onDown={() => toggleSignal(1)} onUp={() => {}}><TurnArrow dir={1} /></HoldButton>
+      </div>
+      <div className="tleft">
         {steerMode === 'wheel' && <SteerWheel />}
         {steerMode === 'arrows' && (
           <div className="pod steerpod">
@@ -231,10 +289,21 @@ function TouchControls() {
 
       <div className="tgroup center" />
 
-      <div className="tgroup" ref={right}>
-        <HoldButton label="Brake" className="pedal brake" {...hold('down')}>Brake</HoldButton>
+      <div className="tgroup">
+        {/* cruise control: on at the speed you are doing (or off); while it is on, ▲ / ▼ change the set speed */}
+        {cruise > 0 && (
+          <div className="pod cruisepod">
+            <RepeatButton label="Cruise speed up" onStep={() => cruiseStep(1)}><Chev dir={1} up /></RepeatButton>
+            <RepeatButton label="Cruise speed down" onStep={() => cruiseStep(-1)}><Chev dir={1} down /></RepeatButton>
+          </div>
+        )}
+        <button className={`tbtn cruisebtn${cruise > 0 ? ' on' : ''}`} aria-pressed={cruise > 0} aria-label={cruise > 0 ? 'Cruise control: on (tap to switch off)' : 'Cruise control: tap to hold the speed you are doing'} onPointerDown={(e) => { e.preventDefault(); toggleCruise() }}>
+          <CruiseIcon />
+          {cruise > 0 && <b>{Math.round(cruise * (units === 'mph' ? 2.23694 : 3.6))}</b>}
+        </button>
+        <HoldButton label="Brake" className="pedal brake" {...hold('down')}><PedalIcon /></HoldButton>
         <div className="gascol">
-          <HoldButton label="Accelerator" className="pedal gas" onDown={() => { input.up = true; gasTapFn() }} onUp={() => { input.up = false }}>Gas</HoldButton>
+          <HoldButton label="Accelerator" className="pedal gas" onDown={() => { input.up = true; gasTapFn() }} onUp={() => { input.up = false }}><PedalIcon gas /></HoldButton>
         </div>
       </div>
     </div>
@@ -324,10 +393,12 @@ function ViewAdjust() {
 function TouchHelp() {
   return (
     <ul className="controls">
-      <li><span><b>Gas / Brake</b></span> Pedals at the bottom right. Hold gas to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop</li>
-      <li><span><b>Steer</b></span> Pick how in Settings → Steering. Wheel (bottom left): put a finger on it and turn it round; the car steers as far as you turn it, and it returns to straight when you let go. Arrows: hold ◀ ▶. Tilt phone: turn the phone like a steering wheel (press the centre screen to make the way you hold it now count as straight). With the wheel or arrows, two quick little nudges / taps the same way change lane. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
-      <li><span><b>Eye</b></span> Bottom left: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
-      <li><span><b>⬅ ➡</b></span> Under the eye: left and right indicator. Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
+      <li><span><b>Cruise</b></span> The speedometer button, left of the brake: tap while driving to hold the speed you are doing (it shows the set speed); ▲ ▼ next to it change it, hold to change it quickly. Tap again, or brake, to switch it off</li>
+      <li><span><b>View</b></span> The crosshair at the right edge: turns your head back to your default view</li>
+      <li><span><b>Gas / Brake</b></span> Pedals at the bottom right: the tall green one is the accelerator, the wide red one the brake. Hold the accelerator to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop</li>
+      <li><span><b>Steer</b></span> Pick how in Settings → Steering. Wheel (bottom left): put a finger on it and turn it round; the car steers as far as you turn it, and it returns to straight when you let go. Arrows: hold ◀ ▶. Tilt phone: turn the phone like a steering wheel (press the centre screen to make the way you hold it now count as straight). With the wheel or arrows, two quick little nudges / taps the same way change lane. Lane assist (the car between two lane lines, right edge, 40% down): tap to switch it on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off</li>
+      <li><span><b>Eye</b></span> Just left of the car's steering wheel: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
+      <li><span><b>⬅ ➡</b></span> Left edge of the screen: left and right indicator. Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
     </ul>
   )
 }
@@ -427,6 +498,7 @@ function PlayingHud() {
         <span><Key>↓</Key> brake</span>
         <span><Key>←</Key><Key>→</Key> steer</span>
         <span><Key>Q</Key><Key>E</Key> indicators</span>
+        <span><Key>C</Key> lane assist</span>
         <span>Drag / 2-finger swipe: look around · tap to look ahead</span>
         <span><Key>Esc</Key> pause</span>
       </div>

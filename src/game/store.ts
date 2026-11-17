@@ -37,6 +37,8 @@ export interface Hud {
   limit: number // posted speed limit here, m/s
   /** lane assist: 0 off, 1 on but standing by, 2 steering */
   assist: 0 | 1 | 2
+  /** cruise control: the set speed (m/s), 0 = off */
+  cruise: number
 }
 
 export interface NavHud {
@@ -94,6 +96,7 @@ interface GameState {
 
 export const initialHud: Hud = {
   speed: 0,
+  cruise: 0,
   signal: 0,
   checks: { left: false, center: false, right: false },
   look: 'front',

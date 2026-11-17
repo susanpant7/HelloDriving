@@ -53,7 +53,7 @@ export const input = {
   recentre: false,
   /** a double press of A (+1) / D (-1): look over that shoulder into the blind spot */
   blind: 0 as 0 | 1 | -1,
-  /** Space (or the LANE button) was pressed: switch lane assist on / off */
+  /** C (or the LANE button) was pressed: switch lane assist on / off */
   laneToggle: false,
   /** a quick double tap of the accelerator: toggles cruise control */
   gasTap: false,
@@ -136,7 +136,7 @@ export const sim = {
   rbl: { node: -1, lane: -1 },
   /** cruise control: the set speed in m/s, 0 = off */
   cruise: 0,
-  /** lane assist is switched on (Space / LANE): the car keeps itself in the middle of its lane */
+  /** lane assist is switched on (C / LANE): the car keeps itself in the middle of its lane */
   laneAssist: false,
   /** lane assist is steering right now (it stands by while you steer by hand, stop, or there is no lane to follow) */
   laneActive: false,
@@ -586,6 +586,23 @@ function pauseOffRoad() {
   useGame.setState({ status: 'paused', pauseReason: 'offroad' })
 }
 
+/** the cruise button (phones): on at the speed you are doing now (from about 11 mph / 18 km/h), or off */
+export function toggleCruise() {
+  if (useGame.getState().status !== 'playing') return
+  if (sim.cruise) { sim.cruise = 0; say('Cruise control off', 'info'); return }
+  if (sim.speed < 5) { say('Cruise control works from about 11 mph (18 km/h)', 'warn'); return }
+  // set to the speed you are doing, rounded to a whole number in the units shown
+  const u = useGame.getState().units === 'mph' ? 0.44704 : 1 / 3.6
+  sim.cruise = Math.round(sim.speed / u) * u
+  say('Cruise control on', 'info')
+}
+/** the cruise ▲ / ▼ buttons: change the set speed by one mph (or km/h) */
+export function cruiseStep(dir: -1 | 1) {
+  if (!sim.cruise || useGame.getState().status !== 'playing') return
+  const u = useGame.getState().units === 'mph' ? 0.44704 : 1 / 3.6
+  sim.cruise = clamp((Math.round(sim.cruise / u) + dir) * u, 5, 40)
+}
+
 export function toggleSignal(dir: -1 | 1) {
   if (useGame.getState().status !== 'playing') return
   sim.signal = sim.signal === dir ? 0 : dir // pressing the same side again switches it off
@@ -644,7 +661,7 @@ export function stepSim(dt: number) {
   // The arrow keys / buttons turn the wheel a little and it STAYS there (like holding a real wheel); Space centres it.
   if (input.recentreHead) { input.recentreHead = false; blindGoal = null; sim.head.yaw = 0; sim.head.pitch = 0 }
   if (input.recentre) { blindGoal = null; sim.wheel = 0; sim.head.yaw = 0; sim.head.pitch = 0; input.recentre = false; autoCentre.on = true; autoCentre.t = 0; autoCentre.ok = 0; autoCentre.prevH = NaN }
-  // lane assist: Space / LANE switches it on and off. While on, the car keeps itself in the middle of its lane, on straights, bends and
+  // lane assist: C / LANE switches it on and off. While on, the car keeps itself in the middle of its lane, on straights, bends and
   // roundabouts. Steering by hand overrides it; it takes over again once you let go and the car is lined up with a lane. It stands by
   // while stopped (and carries on when you move off).
   if (input.laneToggle) {
@@ -1387,6 +1404,7 @@ function syncHud() {
       errors: sim.errors,
       limit: currentLimit(),
       assist: sim.laneAssist ? (sim.laneActive ? 2 : 1) : 0,
+      cruise: sim.cruise,
     },
     nav: { text: nav.text, sub: nav.sub, icon: nav.icon, dist: nav.dist, arrived: nav.arrived },
     messages: s.messages.filter((m) => m.until > sim.t),

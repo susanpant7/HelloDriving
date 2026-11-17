@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type PointerEvent, type RefObject } from 'react'
-import { mirrorScreen } from '../game/cabinConfig'
+import { useEffect, useRef, useState, type PointerEvent } from 'react'
+import { wheelScreen } from '../game/cabinConfig'
 import { setEyeLook, steerTap } from '../game/input'
 import { input, sim } from '../game/sim'
 
@@ -15,6 +15,22 @@ export function EyeControl() {
   const ref = useRef<HTMLDivElement>(null)
   const [d, setD] = useState({ x: 0, y: 0, on: false })
   const origin = useRef({ x: 0, y: 0 })
+  // it sits just left of the car's steering wheel (where the wheel is in your resting forward view, so it does not move as you look round)
+  useEffect(() => {
+    let raf = 0, lx = NaN, ly = NaN
+    const tick = () => {
+      const el = ref.current
+      if (el && wheelScreen.ok) {
+        const w = el.offsetWidth, h = el.offsetHeight
+        const x = Math.max(8, Math.min(window.innerWidth - w - 8, wheelScreen.left - w - 10))
+        const y = Math.max(8, Math.min(window.innerHeight - h - 8, wheelScreen.y - h / 2))
+        if (Math.abs(x - lx) > 0.5 || Math.abs(y - ly) > 0.5) { lx = x; ly = y; el.style.left = `${x}px`; el.style.top = `${y}px`; el.style.visibility = '' }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
 
   const move = (e: PointerEvent<HTMLDivElement>) => {
     const dx = Math.max(-REACH, Math.min(REACH, e.clientX - origin.current.x))
@@ -39,7 +55,8 @@ export function EyeControl() {
   return (
     <div
       ref={ref}
-      className={`eye${d.on ? ' on' : ''}`}
+      className={`eye anchored${d.on ? ' on' : ''}`}
+      style={{ visibility: 'hidden' }}
       role="slider"
       aria-label="Look around: slide left or right to turn your head"
       onPointerDown={down}
@@ -54,7 +71,6 @@ export function EyeControl() {
         <circle cx={50 + (d.x / REACH) * 20} cy={32 + (d.y / REACH) * 10} r="13" fill="currentColor" />
         <circle cx={50 + (d.x / REACH) * 20 + 4} cy={32 + (d.y / REACH) * 10 - 4} r="4" fill="#0e131c" />
       </svg>
-      <small>{d.on ? (d.x < -50 ? 'Blind L' : d.x > 50 ? 'Blind R' : d.x < -12 ? 'Left' : d.x > 12 ? 'Right' : d.y < -14 ? 'Rear' : 'Look') : 'Look'}</small>
     </div>
   )
 }
@@ -168,57 +184,3 @@ export function SteerWheel() {
   )
 }
 
-/**
- * Keeps the on-screen controls clear of the mirrors. The mirrors move on screen with your default view and seat settings (and the
- * screen's shape), so a few times a second this checks where each one is: the lower-left and lower-right groups shrink (towards their
- * corner) until they no longer reach into a mirror, and the LANE button moves above or below a mirror it would cover.
- */
-export function useMirrorGuard(left: RefObject<HTMLElement>, right: RefObject<HTMLElement>, lane: RefObject<HTMLElement>) {
-  useEffect(() => {
-    const PAD = 8
-    const boxes = () => Object.values(mirrorScreen).filter((m) => m.ok && Number.isFinite(m.box.x0)).map((m) => m.box)
-    const hits = (x0: number, y0: number, x1: number, y1: number, bs: ReturnType<typeof boxes>) =>
-      bs.some((b) => x0 < b.x1 + PAD && x1 > b.x0 - PAD && y0 < b.y1 + PAD && y1 > b.y0 - PAD)
-    /** shrink a corner group (anchored at its bottom corner) until it is clear; returns its top edge */
-    const fit = (el: HTMLElement | null, side: 'left' | 'right', bs: ReturnType<typeof boxes>) => {
-      if (!el) return Infinity
-      const cur = Number(el.dataset.s || 1)
-      const r = el.getBoundingClientRect()
-      const w = r.width / cur, h = r.height / cur, bottom = r.bottom
-      const anchor = side === 'left' ? r.left : r.right
-      let s = 1
-      for (; s > 0.55; s -= 0.05) {
-        const x0 = side === 'left' ? anchor : anchor - w * s, x1 = side === 'left' ? anchor + w * s : anchor
-        if (!hits(x0, bottom - h * s, x1, bottom, bs)) break
-      }
-      s = Math.max(0.55, Math.round(s * 100) / 100)
-      if (s !== cur) {
-        el.dataset.s = String(s)
-        el.style.transformOrigin = side === 'left' ? 'bottom left' : 'bottom right'
-        el.style.transform = s === 1 ? '' : `scale(${s})`
-      }
-      return bottom - h * s
-    }
-    const check = () => {
-      const bs = boxes()
-      if (!bs.length) return
-      fit(left.current, 'left', bs)
-      const rightTop = fit(right.current, 'right', bs)
-      // LANE: normally in the middle of the right edge; if a mirror is there, put it just below the mirror (or above, if there is no room)
-      const el = lane.current
-      if (!el) return
-      el.style.top = ''
-      const r = el.getBoundingClientRect()
-      const clash = bs.find((b) => r.left < b.x1 + PAD && r.right > b.x0 - PAD && r.top < b.y1 + PAD && r.bottom > b.y0 - PAD)
-      if (!clash) return
-      const h = r.height
-      const below = clash.y1 + PAD + h / 2, above = clash.y0 - PAD - h / 2
-      if (below + h / 2 < rightTop - PAD) el.style.top = `${below}px`
-      else if (above - h / 2 > PAD) el.style.top = `${above}px`
-    }
-    const t = window.setInterval(check, 250)
-    window.addEventListener('resize', check)
-    check()
-    return () => { clearInterval(t); window.removeEventListener('resize', check) }
-  }, [left, right, lane])
-}
