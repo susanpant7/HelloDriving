@@ -10,6 +10,7 @@ import { City } from './game/City'
 import { setLayout } from './game/map'
 import { layoutOf } from './game/nav'
 import { Highway } from './highway/Highway'
+import { RealWorld } from './real/RealWorld'
 import { useGame } from './game/store'
 import { HORIZON, Sky, SunLight } from './game/Scenery'
 import { Traffic } from './game/Traffic'
@@ -75,7 +76,8 @@ export default function App() {
         <Simulation />
         <Ground />
         {hwLeg && <Highway />}
-        {mode !== 'highway' && <group visible={!hwLeg}><City key={layoutOf(mode)} /></group>}
+        {mode === 'real' && <RealWorld />}
+        {mode !== 'highway' && mode !== 'real' && <group visible={!hwLeg}><City key={layoutOf(mode)} /></group>}
         <Traffic />
         <PlayerRig />
         <ViewDistance />

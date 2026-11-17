@@ -540,3 +540,31 @@ canvas { touch-action: none; }
 .hud.touch .touch-controls .pod .tbtn.sig svg,
 .hud.touch .touch-controls .pod .tbtn.steer svg,
 .hud.touch .touch-controls .pod .tbtn.cruisestep svg { filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.55)); }
+
+/* Real place: the address search in the menu */
+.placepick { margin-top: 10px; display: grid; gap: 8px; }
+.pp-search { display: flex; gap: 8px; }
+.pp-search input {
+  flex: 1; min-width: 0; padding: 9px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.25);
+  background: rgba(0,0,0,.25); color: #fff; font: inherit;
+}
+.pp-results { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 180px; overflow-y: auto; }
+.pp-results button {
+  width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.05); color: #e6edf6; font: inherit; font-size: 13px; cursor: pointer;
+}
+.pp-results button:hover { background: rgba(59,130,246,.25); }
+.pp-msg { margin: 0; font-size: 13px; color: #cfe0ff; }
+.pp-err { color: #ff9b9b; }
+.pp-note { margin: 0; font-size: 11.5px; color: #8e9bb0; }
+/* Real place: the map to pick the start */
+.mappick { position: relative; height: clamp(220px, 34vh, 340px); border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,.18); }
+.mappick canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+.mappick canvas:active { cursor: grabbing; }
+.mp-zoom { position: absolute; right: 8px; top: 8px; display: grid; gap: 4px; }
+.mp-zoom button {
+  width: 32px; height: 32px; border-radius: 8px; border: 1px solid rgba(0,0,0,.25); background: rgba(255,255,255,.92); color: #111;
+  font-size: 18px; font-weight: 700; line-height: 1; cursor: pointer; padding: 0;
+}
+.mp-credit { position: absolute; right: 4px; bottom: 2px; font-size: 10px; color: #333; background: rgba(255,255,255,.75); padding: 1px 4px; border-radius: 3px; pointer-events: none; }
+button.primary:disabled { opacity: .5; cursor: not-allowed; filter: grayscale(.4); }

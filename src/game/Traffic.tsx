@@ -216,7 +216,7 @@ export function Traffic() {
     type DrawCar = Pick<AiCar, 'id' | 'x' | 'z' | 'h' | 'speed' | 'kind' | 'color' | 'braking' | 'sig'>
     const list: DrawCar[] = []
     for (const c of cars) if (c.active) list.push(c)
-    for (let q = 0; !WORLD.highway && q < PARKED.length && q < MAX_PARKED; q++) { // (the town's parked cars: never on the highway)
+    for (let q = 0; !WORLD.highway && !WORLD.real && q < PARKED.length && q < MAX_PARKED; q++) { // (the town's parked cars: never on the highway)
       const pk = PARKED[q]
       const ox = wrapD(pk.x - sim.x), oz = wrapD(pk.z - sim.z)
       if (ox * ox + oz * oz > 200 * 200) continue

@@ -7,6 +7,7 @@ import { HW_TOTAL } from '../highway/traffic'
 import { VIEW0, type ViewOffset, setSteerMode, setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
 import { MapOverlay } from './MapOverlay'
 import { EyeControl, SteerWheel } from './TouchPad'
+import { PlacePicker } from './PlacePicker'
 import { useViewport } from './useViewport'
 
 const Key = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>
@@ -508,6 +509,7 @@ function PlayingHud() {
 
 export function Hud() {
   const status = useGame((s) => s.status)
+  const realStatus = useGame((s) => s.real.status)
   const reason = useGame((s) => s.crashReason)
   const pauseReason = useGame((s) => s.pauseReason)
   const tips = useGame((s) => s.crashTips)
@@ -553,6 +555,7 @@ export function Hud() {
             <section className="practice">
               <h3>What do you want to practise?</h3>
               <ModePicker />
+              {mode === 'real' && <PlacePicker />}
             </section>
             <div className="cols">
               <section>
@@ -564,7 +567,11 @@ export function Hud() {
                 <Settings />
               </section>
             </div>
-            <button className="primary" onClick={start}>Start: {modeTitle(mode)} <Key>Enter</Key></button>
+            {mode === 'real' && realStatus !== 'ready' ? (
+              <button className="primary" disabled>{realStatus === 'loading' ? 'Loading the map…' : realStatus === 'error' ? 'Pick another place' : 'Choose a place to start'}</button>
+            ) : (
+              <button className="primary" onClick={start}>Start: {modeTitle(mode)} <Key>Enter</Key></button>
+            )}
           </div>
         </div>
       )}

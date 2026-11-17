@@ -1,13 +1,14 @@
 import { roadPoint, laneC, G, wrapD, nodeX, nodeZ, armOne, jTypeOf, LANE_W, DIRS, armClosed, HORIZONTAL_NAMES, VERTICAL_NAMES, clearance, dirv, laneOff, mod, nodeKind, type NodeKind } from './map'
 
 /** Practice modes (no highway yet). */
-export type Mode = 'residential' | 'city' | 'highway' | 'roundabout' | 'mixed'
+export type Mode = 'residential' | 'city' | 'highway' | 'roundabout' | 'mixed' | 'real'
 export const MODES: Array<{ id: Mode; title: string; blurb: string }> = [
   { id: 'residential', title: 'Residential', blurb: 'Quiet 25 mph streets: STOP signs, all-way stops and YIELD signs. Stop fully, then go when it is your turn.' },
   { id: 'city', title: 'City', blurb: 'Traffic lights at every junction: stop lines, left-turn arrows, turn lanes and lane changes in traffic.' },
   { id: 'highway', title: 'Highway', blurb: 'Merge, move to the lane you are asked for, follow the overhead signs at exits and splits onto other highways (I-80 West, US-101 North...); faster traffic keeps left, jams on Traffic 5.' },
   { id: 'roundabout', title: 'Roundabouts', blurb: 'A country route of roundabouts only. You are told which exit to take (1st to 4th): take the wrong one and it is game over.' },
   { id: 'mixed', title: 'Mixed', blurb: 'Everything together: traffic lights, roundabouts, stop and yield signs, turn lanes and lane changes.' },
+  { id: 'real', title: 'Real place', blurb: 'Drive the real streets of any place: search for an address and its roads are built from OpenStreetMap. Free drive, no traffic yet.' },
 ]
 /** the road layout each mode is driven on */
 export const layoutOf = (m: Mode) => (m === 'roundabout' ? 'rb' : m === 'residential' ? 'res' : m === 'mixed' ? 'mixed' : 'lights') as 'rb' | 'res' | 'mixed' | 'lights'

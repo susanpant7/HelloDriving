@@ -3,6 +3,8 @@ import { armClosed, noTurnOnRed, arrowPhase, streetLimit, resStyle, PARKED, jLan
 import { FRONT_PITCH, MIRROR_AIM, adjust } from './cabinConfig'
 import { layoutOf, nav, navJunctionExit, navUpdate, startRoute, turnName } from './nav'
 import { WORLD } from './course'
+import { REAL, keepLoadedAround, loadedAt } from '../real/load'
+import { junctionsNear, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
 import { HW, CITY, MIXED_ROAD, NL, firstStage, hwRoute, SPAWN_Z, forkCurve, ACC_LEN, hC, toRoadX, toWorldX, forkShift, laneAt, makeStage, nearestLane, rampHeading, rampNear, rampX, type Ramp, rampU, routeName, splitX, unshiftX, onRoadW as hwOnRoad, recoverPose, startPose, type Route, type Stage } from '../highway/layout'
 import { initHighwayTraffic, resetJoins, setHighwayCount, shiftHighwayTraffic, stepHighwayTraffic, unwarpAll, warpAll } from '../highway/traffic'
 import { initialHud, useGame, type Look, type Msg, type Signal } from './store'
@@ -404,11 +406,15 @@ let arrowHeld = 0 // how long a steering arrow has been held
  * to the right of the car the new lane's centre is.
  */
 const swap = { dir: 0, lat: 0, t: 0 }
+/** real places, STOP signs: the stop line ahead on your road, your lowest speed over the last 15 m before it, judged as you cross it */
+const realStop = { key: '', minV: 99, prevD: Infinity, done: false }
+/** real places: when the map round the car was last topped up, and whether the car is waiting for the map ahead to arrive */
+const realLoad = { t: 0, waiting: false, toldT: -99 }
 function startSwap(dir: -1 | 1) {
   const side = dir < 0 ? 'left' : 'right'
   if (sim.speed < 3) { say('Drive on first: lane assist changes lanes on the move', 'info'); return }
   const rx = Math.cos(sim.h), rz = -Math.sin(sim.h)
-  const W = WORLD.highway ? 3.7 : LANE_W
+  const W = WORLD.highway ? 3.7 : WORLD.real ? realLaneW() : LANE_W
   const cur = laneTarget()
   const lt = laneTarget(sim.x + rx * dir * W, sim.z + rz * dir * W)
   if (!cur || !lt) { say(`No lane to the ${side} here`, 'info'); return }
@@ -435,7 +441,7 @@ function swapTarget() {
 
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
 const normAngle = (a: number) => mod(a + Math.PI, Math.PI * 2) - Math.PI
-const playerObs = () => (WORLD.highway ? { x: sim.x, z: sim.z, h: sim.h, speed: sim.speed } : { x: mod(sim.x, P), z: mod(sim.z, P), h: sim.h, speed: sim.speed })
+const playerObs = () => (WORLD.highway || WORLD.real ? { x: sim.x, z: sim.z, h: sim.h, speed: sim.speed } : { x: mod(sim.x, P), z: mod(sim.z, P), h: sim.h, speed: sim.speed })
 
 /* ---------- lifecycle ---------- */
 let brakeHold = 0 // how long the brake has been held (s)
@@ -449,6 +455,8 @@ export function resetSim(keepScore = false, stage?: Stage) {
   const keep = keepScore ? sim.score : 0
   // the highway course is its own flat world (no wrapping); the grid city repeats every 800 m
   WORLD.highway = useGame.getState().mode === 'highway' || (useGame.getState().mode === 'mixed' && useGame.getState().leg === 'highway')
+  WORLD.real = useGame.getState().mode === 'real'
+  realStop.key = ''
   autoCentre.on = false
   handSteerT = -99
   swap.dir = 0
@@ -459,8 +467,9 @@ export function resetSim(keepScore = false, stage?: Stage) {
     useGame.setState((st) => ({ hwType: routeName(HW.s.road), hwVersion: st.hwVersion + 1 }))
   }
   setLayout(layoutOf(useGame.getState().mode))
-  WORLD_PERIOD.v = WORLD.highway ? 1e7 : P // (after the layout: it sets the town's period)
-  const pose = WORLD.highway ? startPose() : startRoute(useGame.getState().mode) // where the practice route starts
+  WORLD_PERIOD.v = WORLD.highway || WORLD.real ? 1e7 : P // (after the layout: it sets the town's period; the highway and real places do not repeat)
+  // where the drive starts: the highway's on-ramp, the place you searched for, or the practice route's start
+  const pose = WORLD.highway ? startPose() : WORLD.real ? (REAL.map ? realPose(REAL.map, REAL.map.focus.x, REAL.map.focus.z) : { x: 0, z: 0, h: 0 }) : startRoute(useGame.getState().mode)
   Object.assign(sim, {
     t: 0, x: pose.x, z: pose.z, h: pose.h, speed: 0, thr: 0, brk: 0, steerIn: 0, steer: 0, rpm: 900, gear: 1, tickT: 0,
     signal: 0, signalSince: 0, look: 'front', lookSince: 0, lastCheck: { left: -99, center: -99, right: -99 }, lastBlind: { left: -99, right: -99 },
@@ -473,6 +482,7 @@ export function resetSim(keepScore = false, stage?: Stage) {
   input.free = false
   input.yaw = input.pitch = 0
   if (WORLD.highway) { setHighwayCount(useGame.getState().traffic); initHighwayTraffic(pose.z, pose.x); resetJoins() }
+  else if (WORLD.real) { for (const c of cars) c.active = false } // (no traffic in real places yet)
   else initTraffic()
   applyTraffic()
 }
@@ -493,13 +503,14 @@ function trafficHere() {
   return TRAFFIC_CITY[L]
 }
 export function applyTraffic() {
-  if (WORLD.highway) return
+  if (WORLD.highway || WORLD.real) return
   setActiveCount(trafficHere(), playerObs())
 }
 let trafficCheckT = 0
 resetSim()
 
 export function startGame() {
+  if (useGame.getState().mode === 'real' && (useGame.getState().real.status !== 'ready' || !REAL.map)) return // (a real place: the roads round the start must be in first)
   initAudio()
   mistakes.length = 0; pointsLog.gained = 0; pointsLog.lost = 0 // a new drive: a clean report
   nav.start = 'res' // the Mixed course starts in the residential district
@@ -546,6 +557,13 @@ export function resumeGame() {
 
 /** Put the car back on the nearest road, in the right-hand lane, facing the way it was heading. */
 function recoverToRoad() {
+  if (WORLD.real) {
+    if (!REAL.map) return
+    const p = realPose(REAL.map, sim.x, sim.z, sim.h)
+    Object.assign(sim, { x: p.x, z: p.z, h: p.h, speed: 0, thr: 0, brk: 0, steerIn: 0, steer: 0, signal: 0, man: null, jn: null, stop: null, offRoadT: 0, yawRate: 0 })
+    realStop.key = ''
+    return
+  }
   if (WORLD.highway) {
     const p = recoverPose(sim.x, sim.z)
     Object.assign(sim, { x: p.x, z: p.z, h: p.h, speed: 0, thr: 0, brk: 0, steerIn: 0, steer: 0, signal: 0, man: null, offRoadT: 0, yawRate: 0 })
@@ -629,7 +647,13 @@ export function stepSim(dt: number) {
   if (status !== 'playing') return
   sim.t += dt
 
-  const onRoad = WORLD.highway ? hwOnRoad(sim.x, sim.z) : onAsphalt(sim.x, sim.z)
+  // (a real place: where its map has not arrived yet, nothing counts as off the road; the car waits for it instead)
+  const onRoad = WORLD.highway ? hwOnRoad(sim.x, sim.z) : WORLD.real ? !REAL.map || !loadedAt(sim.x, sim.z) || onRealRoad(REAL.map, sim.x, sim.z) : onAsphalt(sim.x, sim.z)
+  if (WORLD.real && REAL.map) {
+    if ((realLoad.t += dt) > 1) { realLoad.t = 0; keepLoadedAround(sim.x, sim.z, sim.h) } // download the map ahead as you drive
+    realLoad.waiting = sim.speed > 0.5 && !loadedAt(sim.x - Math.sin(sim.h) * (12 + sim.speed * 2), sim.z - Math.cos(sim.h) * (12 + sim.speed * 2))
+    if (realLoad.waiting && sim.t - realLoad.toldT > 6) { realLoad.toldT = sim.t; say('Loading the map ahead: the car waits for it', 'info') }
+  } else realLoad.waiting = false
 
   // ---- the indicator switches itself off when the wheel turns the other way from straight: the right one when you steer left of
   // centre, the left one when you steer right of centre (as you straighten up after a turn or a lane change). Not on a roundabout,
@@ -652,7 +676,7 @@ export function stepSim(dt: number) {
   const bt = brakeHold
   const brakeDecel = bt < 0.35 ? 2.3 : bt < 1.1 ? 2.3 + (4 - 2.3) * ((bt - 0.35) / 0.75) : bt < 1.9 ? 4 + (7.6 - 4) * ((bt - 1.1) / 0.8) : 7.6
   const aBrk = sim.brk * brakeDecel
-  const aOff = !onRoad && v > 0.05 ? 5 : 0
+  const aOff = v <= 0.05 ? 0 : realLoad.waiting ? 9 : !onRoad ? 5 : 0 // (off the road; or a real place's map ahead has not arrived yet: the car stops for it)
   sim.speed = Math.max(0, v + (aEng - drag - engBrake - aBrk - aOff) * dt)
   updateEngine(dt)
 
@@ -706,10 +730,10 @@ export function stepSim(dt: number) {
   if (input.laneShift && sim.laneAssist) { startSwap(input.laneShift); input.laneShift = 0 } // lane assist does the lane change
   if (input.laneShift) {
     if (sim.speed > 2) {
-      const h0 = WORLD.highway ? hC(sim.z) : Math.round(sim.h / (Math.PI / 2)) * (Math.PI / 2) // (the highway's own heading where it bends)
+      const h0 = WORLD.highway ? hC(sim.z) : WORLD.real ? (laneTarget()?.h ?? sim.h) : Math.round(sim.h / (Math.PI / 2)) * (Math.PI / 2) // (the highway's own heading where it bends; a real road's heading here)
       if (Math.abs(sim.h - h0) < 0.35) {
         const rxv = Math.cos(h0), rzv = -Math.sin(h0)
-        const w = WORLD.highway ? 3.7 : LANE_W
+        const w = WORLD.highway ? 3.7 : WORLD.real ? realLaneW() : LANE_W
         autoLane.h0 = h0; autoLane.dir = input.laneShift; autoLane.p0 = sim.x * rxv + sim.z * rzv; autoLane.w = w
         autoLane.on = true; autoLane.t = 0; autoLane.sig = false // the indicator is yours to work (Q / E or the buttons): the arrows never touch it
       }
@@ -835,18 +859,18 @@ export function stepSim(dt: number) {
   if ((sim.look === 'blindL' || sim.look === 'blindR') && sim.t - sim.lookSince >= GLANCE_TIME) sim.lastBlind[sim.look === 'blindL' ? 'left' : 'right'] = sim.t
 
   // ---- hard obstacles ----
-  if (!WORLD.highway && inIsland(sim.x, sim.z)) return crash('You drove into the roundabout island.', ['Go around the island, keeping it on your left.'])
+  if (!WORLD.highway && !WORLD.real && inIsland(sim.x, sim.z)) return crash('You drove into the roundabout island.', ['Go around the island, keeping it on your left.'])
   const fx = -Math.sin(sim.h)
   const fz = -Math.cos(sim.h)
   const rx = Math.cos(sim.h)
   const rz = -Math.sin(sim.h)
   for (const [a, b] of [[2, 0.9], [2, -0.9], [-2, 0.9], [-2, -0.9], [0, 0]]) {
     const bx = sim.x + fx * a + rx * b, bz = sim.z + fz * a + rz * b
-    if (WORLD.highway) continue
+    if (WORLD.highway || WORLD.real) continue
     if (insideBuilding(bx, bz)) return crash('You hit a building.', ['Stay on the road.'])
   }
   // cars parked along the kerb of a dense residential street
-  if (!WORLD.highway) {
+  if (!WORLD.highway && !WORLD.real) {
     const px = mod(sim.x, P), pz = mod(sim.z, P)
     for (const q of PARKED) {
       const ox = wrapD(px - q.x), oz = wrapD(pz - q.z)
@@ -865,7 +889,7 @@ export function stepSim(dt: number) {
   // the Mixed course: the amount of traffic follows the district you are driving in (re-checked every couple of seconds)
   if (!WORLD.highway && useGame.getState().mode === 'mixed' && (trafficCheckT += dt) > 2) { trafficCheckT = 0; setTrafficTarget(trafficHere()) }
   if (WORLD.highway) stepHighwayTraffic(dt, sim.t, playerObs())
-  else stepTraffic(dt, sim.t, playerObs())
+  else if (!WORLD.real) stepTraffic(dt, sim.t, playerObs())
   for (const c of cars) {
     if (c.active && hits(c)) return crashInto(c)
   }
@@ -873,6 +897,8 @@ export function stepSim(dt: number) {
   // ---- navigation ----
   if (WORLD.highway) {
     // (the highway course keeps its own instructions, see trackHighway)
+  } else if (WORLD.real) {
+    realNav()
   } else {
     const arrivedAt = navUpdate(sim.x, sim.z)
     if (arrivedAt) say(`You have arrived: ${arrivedAt}`, 'good')
@@ -880,6 +906,7 @@ export function stepSim(dt: number) {
 
   // ---- rules ----
   if (WORLD.highway) { if (trackHighway()) return }
+  else if (WORLD.real) trackRealStop()
   else {
     trackLane()
     trackJunction()
@@ -1116,6 +1143,7 @@ function finishManeuver(m: Maneuver) {
 
 /** The centre of the lane the car is mostly in (the nearest lane running the way it is heading): a point on it and the lane's heading. */
 function laneTarget(qx = sim.x, qz = sim.z): { x: number; z: number; h: number } | null {
+  if (WORLD.real) return REAL.map ? realLaneTarget(REAL.map, qx, qz, sim.h) : null
   if (WORLD.highway) {
     const n = nearestLane(toRoadX(qx, qz), qz)
     return { x: toWorldX(n.x, qz), z: qz, h: n.h + hC(qz) }
@@ -1351,8 +1379,54 @@ function trackStop() {
   sim.stop = null
 }
 
+/* ---------- real places ---------- */
+/** the width of the lane you are in (real places) */
+function realLaneW() { return (REAL.map && realLaneTarget(REAL.map, sim.x, sim.z, sim.h)?.w) || 3.6 }
+/** the banner shows the street you are on */
+function realNav() {
+  const m = REAL.map
+  if (!m) return
+  const r = roadAt(m, sim.x, sim.z)
+  nav.text = r ? r.e.name || 'Unnamed road' : ''
+  nav.sub = 'Free drive'
+  nav.icon = 'S'
+  nav.dist = 0
+}
+function trackRealStop() {
+  const m = REAL.map
+  if (!m) return
+  const r = roadAt(m, sim.x, sim.z)
+  if (!r) return
+  const along = r.dx * -Math.sin(sim.h) + r.dz * -Math.cos(sim.h)
+  if (Math.abs(along) < 0.5) return // (across the road: turning, or crossing a junction)
+  const toB = along > 0
+  const j = m.junctions[toB ? r.e.b : r.e.a]
+  if (j.ctl.get(r.e.id) !== 'stop') { realStop.key = ''; return }
+  const key = `${r.e.id}:${toB}`
+  const dLine = (toB ? r.e.len - r.s : r.s) - (j.r + 1.2) // how far the stop line is ahead
+  if (realStop.key !== key) { realStop.key = key; realStop.minV = 99; realStop.prevD = dLine; realStop.done = false }
+  if (dLine < 15 && dLine > -3) realStop.minV = Math.min(realStop.minV, sim.speed)
+  if (!realStop.done && realStop.prevD > 0 && dLine <= 0) {
+    realStop.done = true
+    const what = j.allWay ? 'the all-way STOP sign' : 'the STOP sign'
+    if (realStop.minV < 0.3) good(`Full stop at ${what}`)
+    else if (realStop.minV < 1.5) say(`Rolling stop at ${what}: stop completely, then go`, 'warn')
+    else say(`You did not stop at ${what}`, 'warn')
+  }
+  realStop.prevD = dLine
+}
+
 function currentLimit() {
-    if (WORLD.highway) return 31.3 // 70 mph on the highway and its ramps
+  if (WORLD.highway) return 31.3 // 70 mph on the highway and its ramps
+  if (WORLD.real) {
+    // the limit of the road you are on (the last road's limit holds while you cross a junction)
+    const m = REAL.map
+    if (!m) return streetLim
+    const inJunction = junctionsNear(m, sim.x, sim.z).some((j) => j.ends.length >= 3 && Math.hypot(j.x - sim.x, j.z - sim.z) < j.r + 2)
+    const r = inJunction ? null : roadAt(m, sim.x, sim.z)
+    if (r) streetLim = r.e.limit
+    return streetLim
+  }
   // 25 mph on a residential street, 30 on the town's main roads (the last street's limit holds through a junction)
   const L = laneInfo()
   if (L) streetLim = L.d % 2 === 0 ? streetLimit(0, nearZ(sim.z)) : streetLimit(1, nearX(sim.x))

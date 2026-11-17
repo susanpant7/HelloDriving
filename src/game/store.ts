@@ -86,6 +86,8 @@ interface GameState {
   /** the highway course: which scenario is being driven, and a counter that changes whenever a new one is built */
   hwType: string
   hwVersion: number
+  /** Real place: loading state of the chosen place's map, a summary or error message, and a count bumped each time a new area is ready */
+  real: { status: 'idle' | 'loading' | 'ready' | 'error'; msg: string; label: string; version: number }
   /** Mixed course: driving the town, or out on the highway */
   leg: 'town' | 'highway'
   /** a short black-screen card shown while the scene changes (town <-> highway) */
@@ -140,10 +142,11 @@ export const useGame = create<GameState>(() => ({
   crashTips: [],
   crashDiag: null,
   pauseReason: 'user',
-  mode: load<Mode>('driveme.mode', 'mixed', (v) => v === 'residential' || v === 'city' || v === 'roundabout' || v === 'mixed' || v === 'highway'),
+  mode: load<Mode>('driveme.mode', 'mixed', (v) => v === 'residential' || v === 'city' || v === 'roundabout' || v === 'mixed' || v === 'highway' || v === 'real'),
   nav: { text: '', sub: '', icon: 'S', dist: 0, arrived: 0 },
   hwType: 'merge',
   hwVersion: 0,
+  real: { status: 'idle', msg: '', label: '', version: 0 },
   leg: 'town',
   fade: null,
   adjusting: false,

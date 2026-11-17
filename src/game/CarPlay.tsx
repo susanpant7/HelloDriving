@@ -7,6 +7,7 @@ import { drawNavMap } from './navMap'
 import { sim } from './sim'
 import { useGame } from './store'
 import { drawHighwayMap } from '../highway/hwMap'
+import { drawRealMap } from '../real/realMap'
 
 const CW = 928, CH = 600 // the screen's own shape (about 1.55 : 1)
 const DOCK = 92
@@ -77,6 +78,7 @@ export function CarPlay() {
     g.save(); g.translate(DOCK, 0); g.beginPath(); g.rect(0, 0, MW, CH); g.clip()
     const st = useGame.getState()
     if (st.mode === 'highway' || (st.mode === 'mixed' && st.leg === 'highway')) drawHighwayMap(g, MW, CH)
+    else if (st.mode === 'real') drawRealMap(g, MW, CH)
     else drawNavMap(g, MW, CH, Math.min(dt, 0.1), units, false, false, 4) // zoomed in: the next junction fills the screen
     // (no turn card here: the next turn is shown in the banner at the top of the screen)
     // speed and limit
