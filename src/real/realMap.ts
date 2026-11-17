@@ -1,5 +1,6 @@
 import { sim } from '../game/sim'
 import { REAL } from './load'
+import { ROUTE, routeXY } from './route'
 import { halfWidth, type RealMap } from './roads'
 
 /**
@@ -42,6 +43,20 @@ export function drawRealMap(g: CanvasRenderingContext2D, w: number, h: number) {
   g.lineCap = 'round'; g.lineJoin = 'round'
   g.strokeStyle = '#5d6b7e'; g.lineWidth = 9; g.stroke(p.roads)
   g.strokeStyle = '#9aa8ba'; g.lineWidth = 13; g.stroke(p.main)
+  // the route still to drive (blue, edged white), and the destination
+  const rp = routeXY()
+  if (rp && !ROUTE.arrived) {
+    const r = ROUTE.route!
+    let k = Math.max(0, ROUTE.seg)
+    const line = new Path2D()
+    line.moveTo(sim.x, sim.z)
+    for (k = k + 1; k < rp.length / 2; k++) { line.lineTo(rp[k * 2], rp[k * 2 + 1]); if (r.cum[k] - ROUTE.s > 3000) break }
+    g.strokeStyle = '#fff'; g.lineWidth = 9; g.stroke(line)
+    g.strokeStyle = '#0b5cff'; g.lineWidth = 6; g.stroke(line)
+    const ex = rp[rp.length - 2], ez = rp[rp.length - 1]
+    g.fillStyle = '#e11d48'; g.strokeStyle = '#fff'; g.lineWidth = 2
+    g.beginPath(); g.arc(ex, ez, 6, 0, Math.PI * 2); g.fill(); g.stroke()
+  }
   // STOP-controlled approaches: a short red bar at the stop line
   g.strokeStyle = '#ff4d4d'; g.lineWidth = 2.2
   for (const j of m.junctions) {

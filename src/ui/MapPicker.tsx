@@ -7,8 +7,10 @@ import { useEffect, useRef } from 'react'
 interface Props {
   /** where to look (the map moves there whenever this changes) */
   center: { lat: number; lon: number; zoom?: number } | null
-  /** the chosen starting point */
+  /** the chosen starting point, the destination, and the route between them ([lat, lon] points) */
   marker: { lat: number; lon: number } | null
+  dest?: { lat: number; lon: number } | null
+  route?: Array<[number, number]> | null
   /** the downloaded driving tiles ("i,j" of 0.01 degree tiles) */
   tiles: string[]
   onPick: (lat: number, lon: number) => void
@@ -24,11 +26,11 @@ const latOf = (y: number, z: number) => { const n = Math.PI - (2 * Math.PI * y) 
 /** map pictures, shared by every map on the page */
 const imgs = new Map<string, HTMLImageElement>()
 
-export function MapPicker({ center, marker, tiles, onPick }: Props) {
+export function MapPicker({ center, marker, dest = null, route = null, tiles, onPick }: Props) {
   const cv = useRef<HTMLCanvasElement>(null)
   const view = useRef({ lat: 39.5, lon: -98.35, z: 4 }) // (the whole of the US, until a place is known)
-  const props = useRef({ marker, tiles, onPick })
-  props.current = { marker, tiles, onPick }
+  const props = useRef({ marker, dest, route, tiles, onPick })
+  props.current = { marker, dest, route, tiles, onPick }
   const drawRef = useRef<() => void>(() => {})
   const zoomRef = useRef<(dz: number) => void>(() => {})
 
@@ -38,7 +40,7 @@ export function MapPicker({ center, marker, tiles, onPick }: Props) {
     view.current = { lat: center.lat, lon: center.lon, z: center.zoom ?? Math.max(view.current.z, 16) }
     drawRef.current()
   }, [center?.lat, center?.lon, center?.zoom])
-  useEffect(() => { drawRef.current() }, [marker?.lat, marker?.lon, tiles.join(';')])
+  useEffect(() => { drawRef.current() }, [marker?.lat, marker?.lon, dest?.lat, dest?.lon, route, tiles.join(';')])
 
   useEffect(() => {
     const c = cv.current!
@@ -81,14 +83,25 @@ export function MapPicker({ center, marker, tiles, onPick }: Props) {
           const [x0, y0] = P((a + 1) * 0.01, b * 0.01), [x1, y1] = P(a * 0.01, (b + 1) * 0.01)
           g.fillRect(x0, y0, x1 - x0, y1 - y0); g.strokeRect(x0, y0, x1 - x0, y1 - y0)
         }
-        // the starting point
-        const mk = props.current.marker
-        if (mk) {
-          const [x, y] = P(mk.lat, mk.lon)
-          g.fillStyle = '#e11d48'; g.strokeStyle = '#fff'; g.lineWidth = 2.5
-          g.beginPath(); g.moveTo(x, y); g.bezierCurveTo(x - 11, y - 14, x - 11, y - 30, x, y - 30); g.bezierCurveTo(x + 11, y - 30, x + 11, y - 14, x, y); g.fill(); g.stroke()
-          g.fillStyle = '#fff'; g.beginPath(); g.arc(x, y - 21, 4, 0, Math.PI * 2); g.fill()
+        // the route
+        const rt = props.current.route
+        if (rt && rt.length > 1) {
+          g.lineCap = 'round'; g.lineJoin = 'round'
+          for (const [w, c] of [[8, '#fff'], [5, '#0b5cff']] as const) {
+            g.strokeStyle = c; g.lineWidth = w
+            g.beginPath(); rt.forEach(([la, lo], i) => { const [x, y] = P(la, lo); if (i) g.lineTo(x, y); else g.moveTo(x, y) }); g.stroke()
+          }
         }
+        // the start (green pin) and the destination (red pin)
+        const pin = (lat: number, lon: number, col: string, letter: string) => {
+          const [x, y] = P(lat, lon)
+          g.fillStyle = col; g.strokeStyle = '#fff'; g.lineWidth = 2.5
+          g.beginPath(); g.moveTo(x, y); g.bezierCurveTo(x - 11, y - 14, x - 11, y - 30, x, y - 30); g.bezierCurveTo(x + 11, y - 30, x + 11, y - 14, x, y); g.fill(); g.stroke()
+          g.fillStyle = '#fff'; g.font = '800 11px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(letter, x, y - 20)
+        }
+        const mk = props.current.marker, ds = props.current.dest
+        if (ds) pin(ds.lat, ds.lon, '#e11d48', 'B')
+        if (mk) pin(mk.lat, mk.lon, '#16a34a', 'A')
       })
     }
     drawRef.current = draw

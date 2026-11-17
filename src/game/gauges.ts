@@ -12,6 +12,8 @@ export interface ClusterData {
   cruise: number // set speed in m/s, 0 = off
   /** lane assist: 0 off, 1 on (standing by), 2 steering */
   assist: 0 | 1 | 2
+  /** in reverse (R lit instead of D) */
+  reverse: boolean
 }
 
 function arrow(g: CanvasRenderingContext2D, x: number, y: number, dir: -1 | 1, on: boolean, s: number) {
@@ -98,7 +100,7 @@ export function drawCluster(g: CanvasRenderingContext2D, w: number, h: number, d
 
   // gear selector (P R N D) under the speed
   const gears = ['P', 'R', 'N', 'D']
-  const cur = 3
+  const cur = d.reverse ? 1 : 3
   g.font = `600 ${R * 0.13}px ${FONT}`
   for (let i = 0; i < 4; i++) {
     g.fillStyle = i === cur ? '#5cff8d' : 'rgba(150,175,205,0.4)'

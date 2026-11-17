@@ -141,7 +141,7 @@ function ControlsList() {
   return (
     <ul className="controls">
       <li><span><Key>↑</Key></span> Accelerator <em>hold to speed up, release to slow down</em></li>
-      <li><span><Key>↓</Key></span> Brake <em>like a real pedal: a tap slows you gently; the longer you hold it, the harder it brakes (firm after about a second, an emergency stop after about two)</em></li>
+      <li><span><Key>↓</Key></span> Brake / reverse <em>like a real pedal: a tap slows you gently; the longer you hold it, the harder it brakes (firm after about a second, an emergency stop after about two). Once stopped, press it again and hold to back up (R lights on the dashboard); ↑ then stops you and drives forward again</em></li>
       <li><span><Key>←</Key><Key>→</Key></span> Steer <em>hold to keep turning the wheel; let go and it returns to straight</em></li>
       <li><span><Key>C</Key></span> Lane assist on / off <em>while on, the car keeps itself in the middle of its lane, even round bends and roundabouts ("LANE ASSIST" glows on the dashboard). Steering by hand overrides it; it takes over again when you let go</em></li>
       <li><span><Key>Space</Key></span> View back to your default <em>turns your head back to the road, to the view you set in the pause menu (Set default view)</em></li>
@@ -396,7 +396,7 @@ function TouchHelp() {
     <ul className="controls">
       <li><span><b>Cruise</b></span> The speedometer button, left of the brake: tap while driving to hold the speed you are doing (it shows the set speed); ▲ ▼ next to it change it, hold to change it quickly. Tap again, or brake, to switch it off</li>
       <li><span><b>View</b></span> The crosshair at the right edge: turns your head back to your default view</li>
-      <li><span><b>Gas / Brake</b></span> Pedals at the bottom right: the tall green one is the accelerator, the wide red one the brake. Hold the accelerator to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop</li>
+      <li><span><b>Gas / Brake</b></span> Pedals at the bottom right: the tall green one is the accelerator, the wide red one the brake. Hold the accelerator to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop. Stopped, press the brake again and hold it to back up; the accelerator then stops you and drives forward again</li>
       <li><span><b>Steer</b></span> Pick how in Settings → Steering. Wheel (bottom left): put a finger on it and turn it round; the car steers as far as you turn it, and it returns to straight when you let go. Arrows: hold ◀ ▶. Tilt phone: turn the phone like a steering wheel (press the centre screen to make the way you hold it now count as straight). With the wheel or arrows, two quick little nudges / taps the same way change lane. Lane assist (the car between two lane lines, right edge, 40% down): tap to switch it on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off</li>
       <li><span><b>Eye</b></span> Just left of the car's steering wheel: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
       <li><span><b>⬅ ➡</b></span> Left edge of the screen: left and right indicator. Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
@@ -510,6 +510,7 @@ function PlayingHud() {
 export function Hud() {
   const status = useGame((s) => s.status)
   const realStatus = useGame((s) => s.real.status)
+  const routeStatus = useGame((s) => s.route.status)
   const reason = useGame((s) => s.crashReason)
   const pauseReason = useGame((s) => s.pauseReason)
   const tips = useGame((s) => s.crashTips)
@@ -567,8 +568,8 @@ export function Hud() {
                 <Settings />
               </section>
             </div>
-            {mode === 'real' && realStatus !== 'ready' ? (
-              <button className="primary" disabled>{realStatus === 'loading' ? 'Loading the map…' : realStatus === 'error' ? 'Pick another place' : 'Choose a place to start'}</button>
+            {mode === 'real' && (realStatus !== 'ready' || routeStatus === 'loading') ? (
+              <button className="primary" disabled>{realStatus === 'loading' ? 'Loading the map…' : realStatus === 'error' ? 'Pick another place' : realStatus === 'idle' ? 'Choose a place to start' : 'Planning the route…'}</button>
             ) : (
               <button className="primary" onClick={start}>Start: {modeTitle(mode)} <Key>Enter</Key></button>
             )}

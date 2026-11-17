@@ -248,6 +248,10 @@ export function keepLoadedAround(x: number, z: number, h: number) {
   Object.assign(aim, { lat, lon, dLat: Math.cos(h), dLon: -Math.sin(h) }) // (heading h: forward is (-sin h, -cos h) in x / z; north is -z)
   want(tilesAround(lat, lon, DRIVE_RADIUS))
 }
+/** While driving a route: also keep the tiles along the next stretch of it loaded. */
+export function keepLoadedAlong(points: Array<{ lat: number; lon: number }>) {
+  for (const p of points) want(tilesAround(p.lat, p.lon, 250))
+}
 /** are the tiles under this point loaded? (if not, the road there simply has not arrived yet) */
 export function loadedAt(x: number, z: number) {
   const m = REAL.map

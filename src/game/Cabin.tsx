@@ -36,6 +36,7 @@ function Displays() {
       trip: sim.trip,
       cruise: sim.cruise,
       assist: sim.laneAssist ? (sim.laneActive ? 2 : 1) : 0,
+      reverse: sim.dir < 0,
     })
     cluster.tex.needsUpdate = true
   }, -1)

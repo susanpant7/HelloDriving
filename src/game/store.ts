@@ -88,6 +88,8 @@ interface GameState {
   hwVersion: number
   /** Real place: loading state of the chosen place's map, a summary or error message, and a count bumped each time a new area is ready */
   real: { status: 'idle' | 'loading' | 'ready' | 'error'; msg: string; label: string; version: number }
+  /** Real place: the route to the destination (none: free drive), a summary or error, the destination, a count bumped on each change */
+  route: { status: 'none' | 'loading' | 'ready' | 'error'; msg: string; dest: string; version: number }
   /** Mixed course: driving the town, or out on the highway */
   leg: 'town' | 'highway'
   /** a short black-screen card shown while the scene changes (town <-> highway) */
@@ -147,6 +149,7 @@ export const useGame = create<GameState>(() => ({
   hwType: 'merge',
   hwVersion: 0,
   real: { status: 'idle', msg: '', label: '', version: 0 },
+  route: { status: 'none', msg: '', dest: '', version: 0 },
   leg: 'town',
   fade: null,
   adjusting: false,
