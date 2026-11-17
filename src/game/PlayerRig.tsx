@@ -262,7 +262,7 @@ export function PlayerRig() {
     camera.rotation.set(
       v.pitch + vib + bd.pitch * bodyOn + bd.bump * bodyOn + (shake ? (Math.random() - 0.5) * shake : 0) - (crashed ? Math.min(0.15, sim.crashT * 0.6) : 0),
       v.yaw + renderPose.h + (shake ? (Math.random() - 0.5) * shake : 0),
-      -sim.steer * 0.15 + bd.roll * bodyOn,
+      -sim.steer * 0.15 * Math.min(1, sim.speed / 8) + bd.roll * bodyOn, // (a slight lean into the turn when moving; none standing still)
     )
     // where the steering wheel sits on screen in the resting forward view (with your default view and seat settings), a few times a
     // second: the eye control is placed just left of it

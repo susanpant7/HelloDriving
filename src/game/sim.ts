@@ -15,6 +15,8 @@ import { CAR_L, CAR_W, setTrafficTarget, whyStuck, junctionBusy, cars, initTraff
 
 export { CAR_L, CAR_W }
 export const WHEELBASE = 2.7
+/** road-wheel angle at full lock (rad) for a speed (m/s): 0.6 rad (34 degrees) standing or slow, about 20 degrees at 25 mph */
+export const steerGain = (v: number) => 0.6 / (1 + (v / 13) ** 2)
 export const LIMIT = SPEED_LIMIT // city speed limit: 30 mph (about 48 km/h), in m/s
 /**
  * Traffic depends on where you drive. For each level (1 light .. 5 heavy) the number of cars in the area around you (about 340 m
@@ -712,7 +714,11 @@ export function stepSim(dt: number) {
   updateEngine(dt)
 
   // ---- steering (bicycle model) ----
-  const sens = [0.32, 0.46, 0.62, 0.82, 1.05][useGame.getState().steerSens - 1]
+  // how far the road wheels turn for the steering wheel's position (rad at full lock): about 35 degrees standing or slow, as in a
+  // real car (1.5 turns of the wheel each way), easing off at speed so the car stays steady. (The lane-keeping maths below was worked
+  // out with the old, fixed response; `auto` converts its answers so it behaves exactly as before.)
+  const gainNow = steerGain(sim.speed)
+  const auto = (0.55 * 0.46 / (1 + (sim.speed / 9) ** 2)) / gainNow
   // The arrow keys / buttons turn the wheel a little and it STAYS there (like holding a real wheel); Space centres it.
   if (input.recentreHead) { input.recentreHead = false; blindGoal = null; sim.head.yaw = 0; sim.head.pitch = 0 }
   if (input.recentre) { blindGoal = null; sim.wheel = 0; sim.head.yaw = 0; sim.head.pitch = 0; input.recentre = false; autoCentre.on = true; autoCentre.t = 0; autoCentre.ok = 0; autoCentre.prevH = NaN }
@@ -780,7 +786,7 @@ export function stepSim(dt: number) {
     // without running past the middle and coming back
     const sp = clamp(15 / Math.max(sim.speed, 1), 0.3, 1) // the car answers the wheel faster at speed: ask for less
     const des = clamp(-err * 0.04 * sp, -0.085 * sp, 0.085 * sp)
-    target = -clamp(((des - hrel) * 4 * 0.7 * sp - sim.yawRate * 0.9) / sens, -1, 1) // the self-steer works the same at any sensitivity
+    target = -clamp(((des - hrel) * 4 * 0.7 * sp - sim.yawRate * 0.9) / 0.46 * auto, -1, 1)
     const done = Math.abs(err) < 0.12 && Math.abs(hrel) < 0.02 && Math.abs(sim.yawRate) < 0.03
     if (done) { // settle exactly in the middle of the new lane, pointing straight
       sim.h = autoLane.h0; sim.yawRate = 0; sim.steerIn = 0
@@ -802,11 +808,10 @@ export function stepSim(dt: number) {
       autoCentre.prevH = lt.h
       autoCentre.dhS += (clamp(dhRaw, -1.5, 1.5) - autoCentre.dhS) * (1 - Math.exp(-dt / 0.35)) // smoothed: the lane's heading is read off short straight pieces
       const dh = autoCentre.dhS
-      const gain = (0.55 * sens) / (1 + (sim.speed / 9) ** 2)
-      const ff = (-Math.atan((WHEELBASE * dh) / Math.max(sim.speed, 1.5)) / gain)
+      const ff = -Math.atan((WHEELBASE * dh) / Math.max(sim.speed, 1.5)) / gainNow
       const lim = swap.dir ? clamp(2.2 / Math.max(sim.speed, 1), 0.07, 0.16) : 0.08 // (a lane change: a firmer move across, about 2-3 s at any speed)
       const des = clamp(e * (swap.dir ? 0.06 : 0.04), -lim, lim)
-      const fb = -clamp(((des - hrel) * 4 * 0.7 - (sim.yawRate - dh) * 0.9) / sens, -1, 1) // the yaw-rate term damps it so it settles without wobbling
+      const fb = -clamp(((des - hrel) * 4 * 0.7 - (sim.yawRate - dh) * 0.9) / 0.46 * auto, -1, 1) // the yaw-rate term damps it so it settles without wobbling
       target = clamp(ff + fb, -1, 1)
       sim.wheel = 0
       // once it has settled in the middle of the lane, pointing along it, for a moment, hand control back (unless Space is still held)
@@ -817,7 +822,7 @@ export function stepSim(dt: number) {
   }
   const manual = !autoLane.on && !autoCentre.on
   sim.laneActive = sim.laneAssist && autoCentre.on
-  const rate = manual ? 6 : target ? 1.5 + sens : 3
+  const rate = manual ? 6 : target ? 1.96 : 3
   // the wheel eases toward where you point it (and returns to centre gently), like a real wheel under the hands
   const err = target - sim.steerIn
   // by hand the road wheels follow the steering wheel directly (no extra lag: what you press is what the car does)
@@ -828,7 +833,7 @@ export function stepSim(dt: number) {
     step = clamp(step, -rate * dt, rate * dt)
     sim.steerIn += Math.abs(step) > Math.abs(err) ? err : step
   }
-  sim.steer = sim.steerIn * (0.55 * sens / (1 + (sim.speed / 9) ** 2))
+  sim.steer = sim.steerIn * gainNow
   // the car's heading turns with a little inertia, so a turn starts and ends smoothly instead of snapping
   const yawTarget = -((sim.speed * sim.dir) / WHEELBASE) * Math.tan(sim.steer) // (backing up, the car swings the other way for the same wheel)
   sim.yawRate += (yawTarget - sim.yawRate) * (1 - Math.exp(-9 * dt))

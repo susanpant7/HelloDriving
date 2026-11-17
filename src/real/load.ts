@@ -5,10 +5,11 @@
  * The world is cut into tiles of 0.01 x 0.01 degrees (about 1.1 x 0.9 km in the US). Only the roads are downloaded (no buildings).
  * The tile with the starting point is all that is needed to start driving; while you drive, the tile the car is heading into is
  * downloaded in the background (see `keepLoadedAround`), and only the 4 tiles nearest the car are kept in memory: the furthest one is
- * dropped when a new one arrives. Every tile downloaded is also kept in the browser (IndexedDB), so going back to one, or opening the
- * place another day, needs no download (and works offline).
+ * dropped when a new one arrives. Small tiles are also kept in the browser for a while (see below), so going back to one needs no
+ * download; anything else is downloaded again when needed.
  */
 import { useGame } from '../game/store'
+import { hasMapillary, parse, seenIn, type Seen } from './mapillary'
 import { convertOsm, toLatLon, type OsmData, type RealMap } from './roads'
 
 export interface Place { label: string; lat: number; lon: number }
@@ -55,13 +56,26 @@ export async function placeName(lat: number, lon: number): Promise<string> {
 }
 
 /* ---------------- the browser's copy of downloaded tiles ---------------- */
+/**
+ * Only small things are kept in the browser: a tile is saved only if it is small (a tile of roads is usually 30-100 KB), at most
+ * CACHE_TILES of them (the oldest go first), and only for a week, so changes made to OpenStreetMap (new lanes, lights...) come
+ * through. Anything else is simply downloaded again when it is needed.
+ */
+const CACHE_MAX_BYTES = 100_000
+const CACHE_TILES = 30
+const CACHE_DAYS = 7
+interface Saved { t: number; text: string }
 let dbP: Promise<IDBDatabase | null> | null = null
 function db(): Promise<IDBDatabase | null> {
   if (!dbP) {
     dbP = new Promise((res) => {
       try {
-        const rq = indexedDB.open('driveme-real', 1)
-        rq.onupgradeneeded = () => rq.result.createObjectStore('tiles')
+        // version 2: the earlier copies (whole areas, with buildings: much bigger) are thrown away
+        const rq = indexedDB.open('driveme-real', 2)
+        rq.onupgradeneeded = () => {
+          if (rq.result.objectStoreNames.contains('tiles')) rq.result.deleteObjectStore('tiles')
+          rq.result.createObjectStore('tiles')
+        }
         rq.onsuccess = () => res(rq.result)
         rq.onerror = () => res(null)
       } catch { res(null) }
@@ -71,22 +85,36 @@ function db(): Promise<IDBDatabase | null> {
   }
   return dbP
 }
+const fresh = (v: unknown): v is Saved => !!v && typeof (v as Saved).text === 'string' && Date.now() - (v as Saved).t < CACHE_DAYS * 864e5
 async function cacheGet(key: string): Promise<string | null> {
   const d = await db()
   if (!d) return null
   return new Promise((res) => {
     try {
       const rq = d.transaction('tiles').objectStore('tiles').get(key)
-      rq.onsuccess = () => res(typeof rq.result === 'string' ? rq.result : null)
+      rq.onsuccess = () => res(fresh(rq.result) ? rq.result.text : null)
       rq.onerror = () => res(null)
     } catch { res(null) }
   })
 }
 async function cachePut(key: string, text: string) {
+  if (text.length > CACHE_MAX_BYTES) return // (too big to keep: downloaded again when needed)
   const d = await db()
   if (!d) return
-  try { d.transaction('tiles', 'readwrite').objectStore('tiles').put(text, key) } catch { /* full: it is downloaded again next time */ }
+  try {
+    const st = d.transaction('tiles', 'readwrite').objectStore('tiles')
+    st.put({ t: Date.now(), text } satisfies Saved, key)
+    // keep only the newest few (and nothing out of date)
+    const all: Array<{ k: IDBValidKey; t: number }> = []
+    const cur = st.openCursor()
+    cur.onsuccess = () => {
+      const c = cur.result
+      if (c) { const v = c.value as Saved; if (!fresh(v)) c.delete(); else all.push({ k: c.key, t: v.t }); c.continue(); return }
+      all.sort((a, b) => b.t - a.t).slice(CACHE_TILES).forEach(({ k }) => st.delete(k))
+    }
+  } catch { /* storage full or unavailable: nothing is kept */ }
 }
+if (typeof window !== 'undefined') void db() // (open it now: this also clears out the old, bigger copies)
 
 /* ---------------- tiles ---------------- */
 const tileKey = (i: number, j: number) => `${i},${j}`
@@ -132,7 +160,8 @@ async function fetchTile(key: string): Promise<OsmData> {
   }
   throw new Error(last)
 }
-const SERVERS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']
+/** public OpenStreetMap data servers, tried in turn when one is busy or down */
+const SERVERS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']
 
 /** where the car is and which way it is going (degrees): the tiles nearest it, and ahead of it, are downloaded first */
 const aim = { lat: 0, lon: 0, dLat: 0, dLon: 0 }
@@ -148,6 +177,17 @@ function nextTile(): string | undefined {
   })
   return queue.splice(best, 1)[0]
 }
+/** traffic lights and signs Mapillary has seen in a tile (from the browser's copy if it has a recent one) */
+async function fetchSeen(key: string): Promise<Seen[]> {
+  if (!hasMapillary()) return []
+  const cached = await cacheGet(`mly:${key}`)
+  if (cached) return parse(cached)
+  const [i, j] = key.split(',').map(Number)
+  const got = await seenIn(i * TILE, j * TILE, (i + 1) * TILE, (j + 1) * TILE)
+  if (!got) return []
+  void cachePut(`mly:${key}`, got.text)
+  return got.list
+}
 /** download the queued tiles, two at a time (the public servers ask for no more than that) */
 let workers = 0
 async function pump() {
@@ -158,9 +198,10 @@ async function worker() {
   for (let key = nextTile(); key; key = nextTile()) {
     const s = session
     try {
-      const data = await fetchTile(key)
+      // the roads, and what street photos show there (lights and signs: optional, nothing lost if it is not there)
+      const [data, seen] = await Promise.all([fetchTile(key), fetchSeen(key)])
       if (s !== session) continue
-      addTile(key, data)
+      addTile(key, { elements: [...data.elements, ...seen] })
       failed.delete(key)
       evict()
       rebuild()
@@ -215,7 +256,14 @@ function rebuild() {
     settle()
   }, 60)
 }
-const summary = (m: RealMap) => `${m.stats.km.toFixed(1)} km of road · ${m.stats.stopsFromMap + m.stats.stopsGuessed} stop signs (${m.stats.stopsGuessed} worked out)`
+const summary = (m: RealMap) => {
+  const s = m.stats
+  const photos = hasMapillary()
+  return `${s.km.toFixed(1)} km of road · lane counts: ${Math.round(s.lanesTagged * 100)}% from the map, the rest estimated` +
+    ` · ${s.signals} traffic light junctions (${s.signalsFromMap} from the map${photos ? `, ${s.signalsFromPhotos} from street photos` : ''}, ${s.signals - s.signalsFromMap - s.signalsFromPhotos} estimated)` +
+    ` · ${s.stopsFromMap + s.stopsFromPhotos + s.stopsGuessed} stop signs (${s.stopsFromMap} from the map${photos ? `, ${s.stopsFromPhotos} from street photos` : ''}, ${s.stopsGuessed} estimated)` +
+    (photos ? ` · speed limits: ${Math.round((s.limitsTagged + s.limitsPhoto) * 100)}% from the map and street photos` : '')
+}
 function ready() {
   const m = REAL.map
   if (!m) return

@@ -136,7 +136,7 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
           </>
         )}
       </div>
-      <p className="pp-note">Map data © OpenStreetMap contributors; routes by OSRM. The roads round the start are downloaded before you drive (shaded blue); more are downloaded as you drive. Stop signs, lights and speed limits are often missing from the map: where they are, the usual US rules are used.</p>
+      <p className="pp-note">Map data © OpenStreetMap contributors; routes by OSRM; traffic lights and signs from street photos © Mapillary (CC BY-SA). The roads round the start are downloaded before you drive (shaded blue); more are downloaded as you drive. Stop signs, lights and speed limits are often missing from the map: where they are, the usual US rules are used.</p>
     </div>
   )
 }

@@ -70,6 +70,8 @@ export interface Junction {
   allWay: boolean
   /** how it was decided: from the map, or worked out */
   ctlFromMap: boolean
+  /** where each approach's control comes from: the map (OpenStreetMap), street photos (Mapillary), or worked out */
+  src: Map<number, 'map' | 'photo' | 'guess'>
 }
 
 export interface RealMap {
@@ -85,7 +87,7 @@ export interface RealMap {
   /** where the place you searched for is (m) */
   focus: { x: number; z: number }
   /** a short summary of how complete the map data is */
-  stats: { roads: number; km: number; lanesTagged: number; limitsTagged: number; stopsFromMap: number; stopsGuessed: number; signals: number }
+  stats: { roads: number; km: number; lanesTagged: number; limitsTagged: number; limitsPhoto: number; stopsFromMap: number; stopsFromPhotos: number; stopsGuessed: number; signals: number; signalsFromMap: number; signalsFromPhotos: number }
   /** spatial index: cell -> [edge, segment] pairs */
   grid: Map<number, number[]>
 }
@@ -111,11 +113,13 @@ const isMain = (c: RoadClass) => RANK[c] >= 5 && !isLink(c)
 
 /** lanes each way when the map does not say (two-way road / one-way road) */
 function defaultLanes(c: RoadClass, oneway: boolean): number {
-  if (c === 'motorway') return oneway ? 2 : 2
-  if (c === 'trunk' || c === 'primary') return oneway ? 2 : 2
-  if (c === 'secondary') return oneway ? 2 : 1
+  if (c === 'motorway' || c === 'trunk' || c === 'primary' || c === 'secondary') return 2
+  // one carriageway of a divided main road (in the US, almost always two lanes or more each way)
+  if (c === 'tertiary' && oneway) return 2
   return 1
 }
+/** a two-way major road with no lane count: two lanes each way and a centre turn lane (the usual US five-lane arterial) */
+const defaultCentre = (c: RoadClass) => c === 'trunk' || c === 'primary' || c === 'secondary'
 /** lane width: wide suburban streets (cars park at the kerb), standard elsewhere */
 function laneWidth(c: RoadClass, lanesEachWay: number): number {
   if (c === 'service') return 3.0
@@ -143,6 +147,8 @@ function parseLimit(v: string | undefined): number | null {
 /* Conversion                                                          */
 /* ------------------------------------------------------------------ */
 
+/** a light or sign seen in street photos (see mapillary.ts), passed in with the map data */
+interface SeenItem { type: 'mly'; id: string; kind: 'light' | 'stop' | 'yield' | 'limit'; mph?: number; lat: number; lon: number }
 interface OsmNode { type: 'node'; id: number; lat: number; lon: number; tags?: Record<string, string> }
 interface OsmWay { type: 'way'; id: number; nodes: number[]; tags?: Record<string, string>; geometry?: Array<{ lat: number; lon: number }> }
 export interface OsmData { elements: Array<OsmNode | OsmWay | { type: string }> }
@@ -178,7 +184,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       const o = nodes.get(n)!
       k = junctions.length
       jIndex.set(n, k)
-      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false })
+      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map() })
     }
     return k
   }
@@ -202,7 +208,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       const f = Number(t['lanes:forward']) || 0, b = Number(t['lanes:backward']) || 0
       if (f || b) { lf = f || Math.max(1, lanes - b); lb = b || Math.max(1, lanes - f); centre = lanes > lf + lb ? 1 : 0 }
       else if (lanes) { lf = lb = Math.max(1, Math.floor(lanes / 2)); centre = lanes >= 3 && lanes % 2 === 1 ? 1 : 0 }
-      else { lf = lb = defaultLanes(cls, false) }
+      else { lf = lb = defaultLanes(cls, false); centre = defaultCentre(cls) ? 1 : 0 }
       if (t['lanes:both_ways']) centre = 1
     }
     lf = Math.min(lf, 6); lb = Math.min(lb, 6)
@@ -244,7 +250,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
   }
 
   // ---- what the map records: traffic lights, stop / give-way signs, turning circles ----
-  let stopsFromMap = 0, signals = 0
+
   for (const o of nodes.values()) {
     const h = o.tags?.highway
     if (!h) continue
@@ -256,8 +262,8 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       // usually tagged on the junction itself, sometimes on each approach just before it
       const j = nearestJunction(junctions, x, z, 30, 3)
       if (j && !j.ctlFromMap) {
-        j.ctlFromMap = true; signals++
-        for (const { e, atA } of j.ends) if (arrives(edges[e], atA)) j.ctl.set(e, 'signal')
+        j.ctlFromMap = true
+        for (const { e, atA } of j.ends) if (arrives(edges[e], atA)) { j.ctl.set(e, 'signal'); j.src.set(e, 'map') }
       }
     } else if (h === 'stop' || h === 'give_way') {
       // a sign on a road: it controls that road where it arrives at the nearest junction along it
@@ -266,21 +272,19 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       if (!j) continue
       if (o.tags?.stop === 'all') {
         j.ctlFromMap = true; j.allWay = true
-        for (const { e, atA } of j.ends) if (arrives(edges[e], atA)) j.ctl.set(e, 'stop')
-        stopsFromMap++
+        for (const { e, atA } of j.ends) if (arrives(edges[e], atA)) { j.ctl.set(e, 'stop'); j.src.set(e, 'map') }
         continue
       }
       const end = ne ? j.ends.find((q) => q.e === ne.e) : null
-      if (end && arrives(edges[end.e], end.atA)) { j.ctl.set(end.e, h === 'stop' ? 'stop' : 'yield'); j.ctlFromMap = true; stopsFromMap++ }
+      if (end && arrives(edges[end.e], end.atA)) { j.ctl.set(end.e, h === 'stop' ? 'stop' : 'yield'); j.src.set(end.e, 'map'); j.ctlFromMap = true }
     }
   }
 
   // ---- the rest: worked out from the kinds of road that meet ----
-  let stopsGuessed = 0
   for (const j of junctions) {
     if (j.ends.length < 3) continue
     const arriving = j.ends.filter(({ e, atA }) => arrives(edges[e], atA))
-    if (j.ctlFromMap) { for (const q of arriving) if (!j.ctl.has(q.e)) j.ctl.set(q.e, 'none'); continue }
+    if (j.ctlFromMap) { for (const q of arriving) if (!j.ctl.has(q.e)) { j.ctl.set(q.e, 'none'); j.src.set(q.e, 'map') } continue }
     const cls = j.ends.map(({ e }) => edges[e].cls)
     // a roundabout: traffic on the ring has priority, traffic entering yields
     if (j.ends.some(({ e }) => edges[e].ring)) { for (const q of arriving) j.ctl.set(q.e, edges[q.e].ring ? 'none' : 'yield'); continue }
@@ -289,7 +293,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     // two different main roads meeting (not just one road changing its name): in a US town that is almost always a junction with
     // traffic lights, even where the map does not record them
     const mainNames = new Set(j.ends.filter(({ e }) => isMain(edges[e].cls)).map(({ e }) => edges[e].name || `#${e}`))
-    if (mainNames.size >= 2) { for (const q of arriving) j.ctl.set(q.e, 'signal'); signals++; continue }
+    if (mainNames.size >= 2) { for (const q of arriving) j.ctl.set(q.e, 'signal'); continue }
     const top = Math.max(...j.ends.map(({ e }) => RANK[edges[e].cls]))
     const minor = arriving.filter(({ e }) => RANK[edges[e].cls] < top)
     if (minor.length) {
@@ -297,14 +301,13 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
         const c = edges[q.e].cls
         const ctl: Control = RANK[c] < top ? (isLink(c) ? 'yield' : 'stop') : 'none'
         j.ctl.set(q.e, ctl)
-        if (ctl === 'stop') stopsGuessed++
       }
       continue
     }
     // streets of the same kind
     if (j.ends.length >= 4) {
       j.allWay = true
-      for (const q of arriving) { j.ctl.set(q.e, 'stop'); stopsGuessed++ }
+      for (const q of arriving) j.ctl.set(q.e, 'stop')
       continue
     }
     // a T: the two roads most nearly in line are the through road; the third stops
@@ -318,9 +321,48 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       if (!arrives(edges[q.e], q.atA)) return
       const ctl: Control = k === through[0] || k === through[1] ? 'none' : 'stop'
       j.ctl.set(q.e, ctl)
-      if (ctl === 'stop') stopsGuessed++
     })
   }
+
+  for (const j of junctions) for (const e of j.ctl.keys()) if (!j.src.has(e)) j.src.set(e, 'guess')
+
+  // ---- what street photos show (Mapillary): traffic lights and STOP / YIELD signs. The map's own data comes first; the photos
+  // replace the guesses ----
+  const seen = (data.elements as Array<{ type: string }>).filter((e): e is SeenItem => e.type === 'mly')
+  const touched = new Set<Junction>()
+  for (const f of seen) {
+    if (f.kind !== 'light') continue
+    const j = nearestJunction(junctions, X(f.lon), Z(f.lat), 40, 3)
+    if (!j || j.ctlFromMap) continue
+    for (const { e, atA } of j.ends) if (arrives(edges[e], atA)) { j.ctl.set(e, 'signal'); j.src.set(e, 'photo') }
+    j.allWay = false
+  }
+  for (const f of seen) {
+    if (f.kind !== 'stop' && f.kind !== 'yield') continue
+    const x = X(f.lon), z = Z(f.lat)
+    // the road it is for: the arriving road whose stop line, at its right-hand kerb, is nearest the sign
+    let best: { j: Junction; e: number } | null = null, bd = 18
+    for (const j of junctions) {
+      if (j.ends.length < 3 || j.ctlFromMap || Math.abs(j.x - x) > 45 || Math.abs(j.z - z) > 45) continue
+      if ([...j.src.values()].includes('photo') && [...j.ctl.values()].includes('signal')) continue // (lights seen there)
+      for (const { e, atA } of j.ends) {
+        if (!arrives(edges[e], atA)) continue
+        const d = endDir(edges[e], atA), right = atA ? halfWidth(edges[e], -1) : halfWidth(edges[e], 1)
+        const px = j.x + d[0] * (j.r + 1.2) + d[1] * right, pz = j.z + d[1] * (j.r + 1.2) - d[0] * right
+        const dd = Math.hypot(px - x, pz - z)
+        if (dd < bd) { bd = dd; best = { j, e } }
+      }
+    }
+    if (!best) continue
+    const { j } = best
+    // a STOP sign where lights were only guessed: there are no lights here
+    for (const [e, c] of j.ctl) if (c === 'signal' && j.src.get(e) === 'guess') { j.ctl.set(e, 'none'); j.src.set(e, 'guess') }
+    j.ctl.set(best.e, f.kind)
+    j.src.set(best.e, 'photo')
+    touched.add(j)
+  }
+  // every road arriving at it has a STOP sign: an all-way stop
+  for (const j of touched) j.allWay = [...j.ctl.values()].every((c) => c === 'stop')
 
   // ---- buildings ----
   const buildings: RealMap['buildings'] = []
@@ -353,12 +395,43 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     }
   })
 
-  let km = 0, lanesTaggedLen = 0, limitsTaggedLen = 0
-  for (const e of edges) { km += e.len; if (e.limitTagged) limitsTaggedLen += e.len; if (e.lanesTagged) lanesTaggedLen += e.len }
+  // ---- speed-limit signs seen in street photos: the limit of that road, carried along the same street (up to 800 m each way, or
+  // until another sign), where the map has no limit ----
+  const photoLimit = new Set<Edge>()
+  const tmpMap = { grid, edges } as unknown as RealMap
+  for (const f of seen) {
+    if (f.kind !== 'limit' || !f.mph) continue
+    const near = nearEdges(tmpMap, X(f.lon), Z(f.lat), 15)[0]
+    if (!near || near.e.limitTagged) continue
+    const lim = f.mph * MPH, name = near.e.name
+    const queue: Array<[Edge, number]> = [[near.e, 0]]
+    const done = new Set<Edge>()
+    while (queue.length) {
+      const [e, d] = queue.shift()!
+      if (done.has(e) || d > 800 || e.limitTagged || (photoLimit.has(e) && e !== near.e)) continue
+      done.add(e)
+      e.limit = lim
+      photoLimit.add(e)
+      for (const jn of [junctions[e.a], junctions[e.b]]) for (const q of jn.ends) {
+        const o = edges[q.e]
+        if (o !== e && name && o.name === name && o.cls === e.cls) queue.push([o, d + e.len])
+      }
+    }
+  }
+
+  let km = 0, lanesTaggedLen = 0, limitsTaggedLen = 0, limitsPhotoLen = 0
+  for (const e of edges) { km += e.len; if (e.limitTagged) limitsTaggedLen += e.len; if (photoLimit.has(e)) limitsPhotoLen += e.len; if (e.lanesTagged) lanesTaggedLen += e.len }
+  // where the lights and stop signs come from
+  let signals = 0, signalsFromMap = 0, signalsFromPhotos = 0, stopsFromMap = 0, stopsFromPhotos = 0, stopsGuessed = 0
+  for (const j of junctions) {
+    const lit = [...j.ctl.entries()].filter(([, c]) => c === 'signal')
+    if (lit.length) { signals++; const s0 = j.src.get(lit[0][0]); if (s0 === 'map') signalsFromMap++; else if (s0 === 'photo') signalsFromPhotos++ }
+    for (const [e, c] of j.ctl) if (c === 'stop') { const s0 = j.src.get(e); if (s0 === 'map') stopsFromMap++; else if (s0 === 'photo') stopsFromPhotos++; else stopsGuessed++ }
+  }
   const f = focus ? { x: X(focus.lon), z: Z(focus.lat) } : { x: 0, z: 0 }
   return {
     lat0, lon0, kx, kz, junctions, edges, buildings, focus: f, grid,
-    stats: { roads: edges.length, km: km / 1000, lanesTagged: km ? lanesTaggedLen / km : 0, limitsTagged: km ? limitsTaggedLen / km : 0, stopsFromMap, stopsGuessed, signals },
+    stats: { roads: edges.length, km: km / 1000, lanesTagged: km ? lanesTaggedLen / km : 0, limitsTagged: km ? limitsTaggedLen / km : 0, limitsPhoto: km ? limitsPhotoLen / km : 0, stopsFromMap, stopsFromPhotos, stopsGuessed, signals, signalsFromMap, signalsFromPhotos },
   }
 }
 

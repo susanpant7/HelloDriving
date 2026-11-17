@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
+import { quality } from '../game/quality'
 import { sim } from '../game/sim'
 import { useGame } from '../game/store'
 import { REAL, tileBoxes, type Place } from './load'
@@ -55,49 +56,72 @@ function buildTile(m: NonNullable<typeof REAL.map>, box: Box, mats: Mats) {
   return { group: g, dispose: () => { geos.forEach((x) => x.dispose()); inst.forEach((t) => t.dispose()) } }
 }
 
-/** the tiles built so far (kept between renders), for the place they were built for */
+/** the cells built so far (kept between renders), for the place they were built for */
 const built = new Map<string, { sig: string; group: THREE.Group; dispose: () => void }>()
 let builtFor: Place | null = null
+/** the 3D world is built in square cells of this size (m) */
+const CELL = 160
 
 /**
- * The real place being driven, tile by tile. When a tile arrives it is built, and so is any neighbour whose roads it changed (a road
- * crossing the tile edge now meets a junction there): one tile per frame, so driving stays smooth while the map loads.
+ * The real place being driven, built as you go: only the cells you could see (the view distance of the graphics setting, all round,
+ * so the mirrors are filled too) plus a margin. As the car moves, the nearest missing cells are built (a few milliseconds' worth
+ * each frame, so driving stays smooth) and the ones left behind are taken away. A cell is also rebuilt when newly downloaded map
+ * changes its roads (a road crossing into it now meets a junction there).
  */
 export function RealWorld() {
-  const version = useGame((s) => s.real.version)
   const maxAniso = useThree((s) => s.gl.capabilities.getMaxAnisotropy())
   const mats = useMemo(() => makeMats(maxAniso), [maxAniso])
   const root = useMemo(() => new THREE.Group(), [])
-  const work = useMemo(() => ({ list: [] as Array<{ key: string; box: Box; sig: string }> }), [])
+  const plan = useMemo(() => ({ x: NaN, z: NaN, v: -1, t: 0, list: [] as Array<{ key: string; box: Box }> }), [])
 
-  const clear = () => { for (const t of built.values()) { root.remove(t.group); t.dispose() } built.clear() }
-  // which tiles need building
-  useEffect(() => {
-    if (REAL.place !== builtFor) { clear(); builtFor = REAL.place }
-    const m = REAL.map
-    if (!m) { clear(); work.list = []; return }
-    work.list = []
-    const boxes = tileBoxes()
-    // tiles dropped from memory (the car has moved on): their roads, scenery and signs go too
-    const now = new Set(boxes.map((b) => b.key))
-    for (const [key, t] of built) if (!now.has(key)) { root.remove(t.group); t.dispose(); built.delete(key) }
-    for (const b of boxes) {
-      const sig = tileSignature(m, b)
-      if (built.get(b.key)?.sig !== sig) work.list.push({ key: b.key, box: b, sig })
+  const drop = (key: string) => { const t = built.get(key); if (t) { root.remove(t.group); t.dispose(); built.delete(key) } }
+  const clear = () => { for (const k of [...built.keys()]) drop(k) }
+
+  /** which cells there should be round the car now, and which of those need (re)building */
+  const replan = (m: NonNullable<typeof REAL.map>, version: number) => {
+    const fresh = version !== plan.v
+    Object.assign(plan, { x: sim.x, z: sim.z, v: version, t: 0 })
+    const R = quality().far + 80
+    const tiles = tileBoxes()
+    const hasMap = (b: Box) => tiles.some((t) => b.x0 < t.x1 && b.x1 > t.x0 && b.z0 < t.z1 && b.z1 > t.z0)
+    const dist = (b: Box) => Math.hypot(Math.max(b.x0 - sim.x, 0, sim.x - b.x1), Math.max(b.z0 - sim.z, 0, sim.z - b.z1))
+    // left behind (with a cell's slack, so a cell at the edge does not flicker in and out), or its map dropped: taken away
+    for (const key of [...built.keys()]) {
+      const [i, j] = key.split(',').map(Number)
+      const b = { x0: i * CELL, x1: (i + 1) * CELL, z0: j * CELL, z1: (j + 1) * CELL }
+      if (dist(b) > R + CELL || !hasMap(b)) drop(key)
     }
-    // the tiles nearest the car first
-    const d = (b: Box) => Math.hypot((b.x0 + b.x1) / 2 - sim.x, (b.z0 + b.z1) / 2 - sim.z)
-    work.list.sort((u, v) => d(u.box) - d(v.box))
-  }, [version])
-  useFrame(() => {
+    const list: Array<{ key: string; box: Box; d: number }> = []
+    const r = Math.ceil(R / CELL)
+    const ci = Math.floor(sim.x / CELL), cj = Math.floor(sim.z / CELL)
+    for (let i = ci - r; i <= ci + r; i++) for (let j = cj - r; j <= cj + r; j++) {
+      const box = { x0: i * CELL, x1: (i + 1) * CELL, z0: j * CELL, z1: (j + 1) * CELL }
+      const d = dist(box)
+      if (d > R || !hasMap(box)) continue
+      const key = `${i},${j}`
+      const have = built.get(key)
+      if (have && (!fresh || have.sig === tileSignature(m, box))) continue
+      list.push({ key, box, d })
+    }
+    plan.list = list.sort((a, b) => a.d - b.d)
+  }
+
+  useFrame((_, dt) => {
+    if (REAL.place !== builtFor) { clear(); builtFor = REAL.place; plan.v = -1 }
     const m = REAL.map
-    const next = work.list.shift()
-    if (!m || !next) return
-    const old = built.get(next.key)
-    if (old) { root.remove(old.group); old.dispose() }
-    const t = buildTile(m, next.box, mats)
-    root.add(t.group)
-    built.set(next.key, { ...t, sig: next.sig })
+    if (!m) { if (built.size) clear(); return }
+    const version = useGame.getState().real.version
+    plan.t += dt
+    if (version !== plan.v || plan.t > 1 || !(Math.hypot(sim.x - plan.x, sim.z - plan.z) < 30)) replan(m, version)
+    // build the nearest missing cells, a few milliseconds' worth a frame
+    const t0 = performance.now()
+    while (plan.list.length && performance.now() - t0 < 4) {
+      const next = plan.list.shift()!
+      drop(next.key)
+      const t = buildTile(m, next.box, mats)
+      root.add(t.group)
+      built.set(next.key, { ...t, sig: tileSignature(m, next.box) })
+    }
   })
   useEffect(() => () => {
     clear(); builtFor = null
@@ -111,3 +135,5 @@ export function RealWorld() {
     </>
   )
 }
+
+if (typeof window !== 'undefined') Object.assign(window, { __cells: built }) // (for debugging in the console)

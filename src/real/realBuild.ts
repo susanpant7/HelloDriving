@@ -79,8 +79,10 @@ function strip(g: Geo, line: P2[], o1: number, o2: number, y: number, color: V3)
   }
 }
 /** a dashed line: 3 m paint, 9 m gap (the US 10 ft / 30 ft pattern) */
-function dashes(g: Geo, e: Edge, s0: number, s1: number, o: number, color: V3, w = 0.12) {
-  for (let s = s0 + 1; s < s1 - 1; s += 12) strip(g, sub(e, s, Math.min(s + 3, s1)), o - w / 2, o + w / 2, Y_MARK, color)
+/** a dashed line between s0 and s1 (the whole painted stretch: the dashes keep the same spacing wherever the road is cut into
+ *  pieces); only the dashes starting within [lo, hi) are drawn */
+function dashes(g: Geo, e: Edge, s0: number, s1: number, o: number, color: V3, w = 0.12, lo = -Infinity, hi = Infinity) {
+  for (let s = s0 + 1; s < s1 - 1; s += 12) if (s >= lo && s < hi) strip(g, sub(e, s, Math.min(s + 3, s1)), o - w / 2, o + w / 2, Y_MARK, color)
 }
 function disc(g: Geo, x: number, z: number, r: number, y: number, color: V3, n = 20) {
   for (let i = 0; i < n; i++) {
@@ -103,8 +105,36 @@ export interface SignDef { x: number; z: number; face: P2; kind: 'stop' | 'allwa
 /** a tile's box (m): what lies in it is built with it */
 export interface Box { x0: number; x1: number; z0: number; z1: number }
 const inBox = (b: Box | undefined, x: number, z: number) => !b || (x >= b.x0 && x < b.x1 && z >= b.z0 && z < b.z1)
-/** the tile an edge belongs to: where its middle is */
-const edgeIn = (b: Box | undefined, e: Edge) => { if (!b) return true; const p = pointAt(e, e.len / 2); return inBox(b, p[0], p[1]) }
+/** an edge's bounding box (with room for its width) */
+const boxes = new WeakMap<Edge, Box>()
+function edgeBox(e: Edge): Box {
+  let b = boxes.get(e)
+  if (!b) {
+    b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity }
+    for (let k = 0; k < e.pts.length; k += 2) { b.x0 = Math.min(b.x0, e.pts[k]); b.x1 = Math.max(b.x1, e.pts[k]); b.z0 = Math.min(b.z0, e.pts[k + 1]); b.z1 = Math.max(b.z1, e.pts[k + 1]) }
+    b.x0 -= 20; b.x1 += 20; b.z0 -= 20; b.z1 += 20
+    boxes.set(e, b)
+  }
+  return b
+}
+const overlaps = (a: Box, b: Box) => a.x0 < b.x1 && a.x1 > b.x0 && a.z0 < b.z1 && a.z1 > b.z0
+/**
+ * The parts of an edge that lie in a box, as stretches [a, b) of distance along it. The edge is cut into 5 m steps and each step
+ * belongs to the box its middle is in, so neighbouring boxes share the road out exactly (no gaps, nothing drawn twice).
+ */
+function pieces(e: Edge, b: Box | undefined): Array<[number, number]> {
+  if (!b) return [[0, e.len]]
+  if (!overlaps(edgeBox(e), b)) return []
+  const out: Array<[number, number]> = []
+  const n = Math.max(1, Math.ceil(e.len / 5))
+  let cur: [number, number] | null = null
+  for (let i = 0; i < n; i++) {
+    const sa = (e.len * i) / n, sb = (e.len * (i + 1)) / n
+    const p = pointAt(e, (sa + sb) / 2)
+    if (inBox(b, p[0], p[1])) { if (cur && cur[1] === sa) cur[1] = sb; else out.push((cur = [sa, sb])) } else cur = null
+  }
+  return out
+}
 
 /**
  * A fingerprint of what a tile's roads look like, so a tile is only rebuilt when a newly arrived neighbour changed it (a road
@@ -112,7 +142,7 @@ const edgeIn = (b: Box | undefined, e: Edge) => { if (!b) return true; const p =
  */
 export function tileSignature(m: RealMap, b: Box) {
   const parts: string[] = []
-  for (const e of m.edges) if (edgeIn(b, e)) parts.push(`${e.pts[0].toFixed(1)},${e.pts[1].toFixed(1)},${e.len.toFixed(1)},${e.lanesF}${e.lanesB}${e.centre},${e.cls},${Math.round(e.limit)}`)
+  for (const e of m.edges) if (overlaps(edgeBox(e), b)) parts.push(`${e.pts[0].toFixed(1)},${e.pts[1].toFixed(1)},${e.len.toFixed(1)},${e.lanesF}${e.lanesB}${e.centre},${e.cls},${Math.round(e.limit)}`)
   for (const j of m.junctions) if (j.ends.length && inBox(b, j.x, j.z)) parts.push(`J${j.x.toFixed(1)},${j.z.toFixed(1)},${j.ends.length},${j.bulb},${[...j.ctl.values()].join('')}`)
   parts.sort()
   return parts.join('|')
@@ -122,36 +152,39 @@ export function buildRoads(m: RealMap, box?: Box) {
   const road = new Geo(), marks = new Geo(), solid = new Geo()
   const signs: SignDef[] = []
 
-  for (const e of m.edges) {
-    if (!edgeIn(box, e)) continue
+  for (const e of m.edges) for (const [a, b] of pieces(e, box)) buildEdge(e, a, b)
+  /** one stretch [a, b) of an edge: its road surface, kerbs and sidewalks, paint and speed signs */
+  function buildEdge(e: Edge, a: number, b: number) {
     const wR = halfWidth(e, 1), wL = halfWidth(e, -1)
-    const line = sub(e, 0, e.len)
-    strip(road, line, -wL, wR, Y_ROAD, [1, 1, 1])
+    strip(road, sub(e, a, b), -wL, wR, Y_ROAD, [1, 1, 1])
     const [t0, t1] = trims(m, e)
+    // (s0, s1: where the paint and sidewalks run along the whole edge; lo, hi: the part of that in this stretch)
     const s0 = Math.min(t0, e.len / 2), s1 = Math.max(e.len - t1, e.len / 2)
+    const lo = Math.max(s0, a), hi = Math.min(s1, b)
+    const seg = () => sub(e, lo, hi)
 
     // ---- kerbs and sidewalks (a grass strip between the kerb and the sidewalk) ----
-    if (sidewalked(e) && s1 - s0 > 4) {
+    if (sidewalked(e) && s1 - s0 > 4 && hi > lo) {
       const divided = e.oneway && !e.cls.endsWith('_link')
       for (const side of divided ? [1] : [1, -1]) {
         const w = side === 1 ? wR : wL
-        const l = sub(e, s0, s1)
+        const l = seg()
         if (side === 1) { strip(solid, l, w, w + 0.25, Y_WALK, KERB); strip(solid, l, w + 1.6, w + 3.1, Y_WALK, WALK) }
         else { strip(solid, l, -w - 0.25, -w, Y_WALK, KERB); strip(solid, l, -w - 3.1, -w - 1.6, Y_WALK, WALK) }
       }
     }
 
     // ---- lane paint ----
-    if (s1 - s0 > 2) {
+    if (s1 - s0 > 2 && hi > lo) {
       const main = isMainRoad(e)
       if (e.oneway) {
         // a one-way carriageway: yellow line on the left edge, white on the right, dashes between its lanes
         const half = (e.lanesF * e.laneW) / 2
         if (main) {
-          strip(marks, sub(e, s0, s1), -half + 0.05, -half + 0.2, Y_MARK, YELLOW)
-          strip(marks, sub(e, s0, s1), half - 0.2, half - 0.05, Y_MARK, WHITE)
+          strip(marks, seg(), -half + 0.05, -half + 0.2, Y_MARK, YELLOW)
+          strip(marks, seg(), half - 0.2, half - 0.05, Y_MARK, WHITE)
         }
-        for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, -half + k * e.laneW, WHITE)
+        for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, -half + k * e.laneW, WHITE, 0.12, lo, hi)
       } else {
         // a two-way road: double yellow down the middle (a centre turn lane gets a yellow line on each side), dashes between lanes
         // going the same way, white edge lines on main roads. Quiet residential streets have no paint, as in most US towns.
@@ -159,19 +192,19 @@ export function buildRoads(m: RealMap, box?: Box) {
         if (main || e.lanesF + e.lanesB > 2) {
           if (e.centre) {
             for (const sd of [1, -1]) {
-              strip(marks, sub(e, s0, s1), sd * c - 0.07, sd * c + 0.07, Y_MARK, YELLOW)
-              dashes(marks, e, s0, s1, sd * (c - 0.25), YELLOW, 0.12)
+              strip(marks, seg(), sd * c - 0.07, sd * c + 0.07, Y_MARK, YELLOW)
+              dashes(marks, e, s0, s1, sd * (c - 0.25), YELLOW, 0.12, lo, hi)
             }
           } else {
-            strip(marks, sub(e, s0, s1), -0.22, -0.08, Y_MARK, YELLOW)
-            strip(marks, sub(e, s0, s1), 0.08, 0.22, Y_MARK, YELLOW)
+            strip(marks, seg(), -0.22, -0.08, Y_MARK, YELLOW)
+            strip(marks, seg(), 0.08, 0.22, Y_MARK, YELLOW)
           }
-          for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, c + k * e.laneW, WHITE)
-          for (let k = 1; k < e.lanesB; k++) dashes(marks, e, s0, s1, -(c + k * e.laneW), WHITE)
+          for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, c + k * e.laneW, WHITE, 0.12, lo, hi)
+          for (let k = 1; k < e.lanesB; k++) dashes(marks, e, s0, s1, -(c + k * e.laneW), WHITE, 0.12, lo, hi)
           if (main) {
             const ef = c + e.lanesF * e.laneW, eb = c + e.lanesB * e.laneW
-            strip(marks, sub(e, s0, s1), ef - 0.15, ef, Y_MARK, WHITE)
-            strip(marks, sub(e, s0, s1), -eb, -eb + 0.15, Y_MARK, WHITE)
+            strip(marks, seg(), ef - 0.15, ef, Y_MARK, WHITE)
+            strip(marks, seg(), -eb, -eb + 0.15, Y_MARK, WHITE)
           }
         }
       }
@@ -182,7 +215,7 @@ export function buildRoads(m: RealMap, box?: Box) {
       const mph = Math.round(e.limit / 0.44704 / 5) * 5
       for (const dir of e.oneway ? [1] : [1, -1]) {
         const s = dir === 1 ? s0 + 30 : s1 - 30
-        if (s < s0 || s > s1) continue
+        if (s < s0 || s > s1 || s < a || s >= b) continue
         const [px, pz, dx, dz] = pointAt(e, s)
         const tx = dx * dir, tz = dz * dir // travel direction
         const off = (dir === 1 ? wR : wL) + 1.0
@@ -307,14 +340,14 @@ export function placeTrees(m: RealMap, box: Box): Array<[number, number, number]
   const out: Array<[number, number, number]> = []
   const ok = (x: number, z: number) => !onRealRoad(m, x, z, 2.5) && !inBuilding(x, z)
   for (const e of m.edges) {
-    if (!sidewalked(e) || !edgeIn(box, e)) continue
+    if (!sidewalked(e) || !overlaps(edgeBox(e), box)) continue
     for (let s = 8; s < e.len - 8; s += 16) {
       for (const side of [1, -1] as const) {
         if (hash(e.id, s, side) > 0.55) continue
         const [px, pz, dx, dz] = pointAt(e, s + hash(s, e.id, 5) * 6)
         const off = side * (halfWidth(e, side) + 4.2 + hash(e.id, s, 7) * 5)
         const x = px - dz * off, z = pz + dx * off
-        if (ok(x, z)) out.push([x, z, 0.8 + hash(x, z, 8) * 0.6])
+        if (inBox(box, x, z) && ok(x, z)) out.push([x, z, 0.8 + hash(x, z, 8) * 0.6])
       }
     }
   }
