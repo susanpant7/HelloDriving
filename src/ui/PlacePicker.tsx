@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
+import { startGame } from '../game/sim'
 import { useGame } from '../game/store'
-import { REAL, openPlace, placeName, savedPlace, searchPlaces, type Place } from '../real/load'
-import { ROUTE, planRoute, savedDest, setDestination } from '../real/route'
+import { REAL, cancelPlace, openPlace, placeName, savedPlace, searchPlaces, type Place } from '../real/load'
+import { ROUTE, cancelRoute, savedDest, setDestination } from '../real/route'
 import { MapPicker } from './MapPicker'
 
 type Which = 'start' | 'dest'
 
 /** an address search box with its list of matches */
-function PlaceSearch({ value, onValue, placeholder, label, onChoose, extra }: { value: string; onValue: (v: string) => void; placeholder: string; label: string; onChoose: (p: Place) => void; extra?: ReactNode }) {
+function PlaceSearch({ value, onValue, placeholder, label, onChoose, disabled, extra }: { value: string; onValue: (v: string) => void; placeholder: string; label: string; onChoose: (p: Place) => void; disabled: boolean; extra?: ReactNode }) {
   const [results, setResults] = useState<Place[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const search = async () => {
-    if (!value.trim()) return
+    if (!value.trim() || disabled) return
     setBusy(true); setErr(''); setResults(null)
     try {
       const r = await searchPlaces(value.trim())
@@ -25,13 +26,13 @@ function PlaceSearch({ value, onValue, placeholder, label, onChoose, extra }: { 
   return (
     <>
       <form className="pp-search" onSubmit={(e) => { e.preventDefault(); void search() }}>
-        <span className="pp-label">{label}</span>
-        <input value={value} onChange={(e) => onValue(e.target.value)} placeholder={placeholder} aria-label={placeholder} onKeyDown={(e) => e.stopPropagation()} />
-        <button type="submit" className="secondary" disabled={busy || !value.trim()}>{busy ? 'Searching…' : 'Search'}</button>
+        <span className={`pp-label ${label === 'A' ? 'a' : 'b'}`}>{label}</span>
+        <input value={value} onChange={(e) => onValue(e.target.value)} placeholder={placeholder} aria-label={placeholder} disabled={disabled} onKeyDown={(e) => e.stopPropagation()} />
+        <button type="submit" className="secondary" disabled={disabled || busy || !value.trim()}>{busy ? 'Searching…' : 'Search'}</button>
         {extra}
       </form>
       {err && <p className="pp-msg pp-err">{err}</p>}
-      {results && results.length > 0 && (
+      {results && results.length > 0 && !disabled && (
         <ul className="pp-results">
           {results.map((p, i) => (
             <li key={i}><button type="button" onClick={() => { setResults(null); onChoose(p) }}>{p.label}</button></li>
@@ -43,91 +44,99 @@ function PlaceSearch({ value, onValue, placeholder, label, onChoose, extra }: { 
 }
 
 /**
- * Real place: where to start (A) and, if you like, where to drive to (B). Search for an address, or tap a street on the map. The
- * roads round the start are downloaded before you can start; the rest are downloaded as you drive. With a destination, the route
- * is planned and you are guided along it.
+ * Real place, the map page: choose where to start (A) and, if you like, where to drive to (B), by searching for an address or by
+ * tapping the map. "Download map" then locks the choice and downloads the roads round the start (and plans the route); when it is
+ * done, Drive starts. Cancel stops the download and goes back to the main page.
  */
-export function PlacePicker() {
+export function PlacePicker({ onBack }: { onBack: () => void }) {
   const real = useGame((s) => s.real)
   const route = useGame((s) => s.route)
-  const [qA, setQA] = useState(() => short(savedPlace()?.label ?? ''))
-  const [qB, setQB] = useState(() => short(savedDest()?.label ?? ''))
-  const [center, setCenter] = useState<{ lat: number; lon: number; zoom?: number } | null>(() => savedPlace())
-  const [start, setStart] = useState<{ lat: number; lon: number } | null>(() => savedPlace())
-  const [dest, setDest] = useState<{ lat: number; lon: number } | null>(() => savedDest())
+  const [a, setA] = useState<Place | null>(() => (REAL.place ?? savedPlace()))
+  const [b, setB] = useState<Place | null>(() => savedDest())
+  const [qA, setQA] = useState(() => short(a?.label ?? ''))
+  const [qB, setQB] = useState(() => short(b?.label ?? ''))
+  const [center, setCenter] = useState<{ lat: number; lon: number; zoom?: number } | null>(() => a)
   const [tapSets, setTapSets] = useState<Which>('start')
   const pickT = useRef(0)
 
-  // reopen the last place you drove (from the browser's copy, if it still has one), and its route
-  useEffect(() => {
-    const p = savedPlace()
-    if (p && !REAL.place && useGame.getState().real.status === 'idle') { void openPlace(p); void planRoute() }
-    return () => clearTimeout(pickT.current)
-  }, [])
-  // show the whole route once it is planned
-  useEffect(() => {
-    const r = ROUTE.route
-    if (route.status !== 'ready' || !r) return
-    let a = 90, b = -90, c = 180, d = -180
-    for (const [la, lo] of r.coords) { a = Math.min(a, la); b = Math.max(b, la); c = Math.min(c, lo); d = Math.max(d, lo) }
-    const span = Math.max((b - a) * 1.3, ((d - c) * Math.cos((a * Math.PI) / 180)) * 0.8, 0.002)
-    setCenter({ lat: (a + b) / 2, lon: (c + d) / 2, zoom: Math.max(4, Math.min(17, Math.log2(360 / span) - 0.3)) })
-  }, [route.version])
+  // the place's map: being downloaded, ready, or failed (the choice is locked from "Download map" until it is cancelled)
+  const downloading = real.status === 'loading' || route.status === 'loading'
+  const ready = real.status === 'ready' && !downloading
+  const locked = downloading || ready
 
-  const setA = (p: Place) => {
-    setQA(short(p.label))
-    setStart({ lat: p.lat, lon: p.lon })
-    if (!ROUTE.dest) setCenter({ lat: p.lat, lon: p.lon, zoom: 16 })
-    void openPlace(p)
-    void planRoute()
-  }
-  const setB = (p: Place | null) => {
-    setQB(p ? short(p.label) : '')
-    setDest(p ? { lat: p.lat, lon: p.lon } : null)
-    setDestination(p)
-  }
-  // a tap on the map: the pin moves at once; the place is opened a moment later (so a few quick taps open only the last)
+  const chooseA = (p: Place) => { setA(p); setQA(short(p.label)); setCenter({ lat: p.lat, lon: p.lon, zoom: 16 }) }
+  const chooseB = (p: Place | null) => { setB(p); setQB(p ? short(p.label) : ''); if (p) setCenter({ lat: p.lat, lon: p.lon, zoom: 15 }) }
+  // a tap on the map: the pin moves at once, and the street name is looked up
   const pickOnMap = (lat: number, lon: number) => {
+    if (locked) return
     const which = tapSets
-    if (which === 'start') {
-      setStart({ lat, lon })
-      useGame.setState((s) => ({ real: { ...s.real, status: 'loading', msg: 'Downloading the roads…', label: 'the chosen spot' } }))
-    } else setDest({ lat, lon })
+    const p = { label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon }
+    if (which === 'start') { setA(p); setQA('Looking up the street…') } else { setB(p); setQB('Looking up the street…') }
     clearTimeout(pickT.current)
     pickT.current = window.setTimeout(async () => {
-      const p = { label: await placeName(lat, lon), lat, lon }
-      if (which === 'start') setA(p)
-      else setB(p)
-    }, 500)
+      const named = { ...p, label: await placeName(lat, lon) }
+      if (which === 'start') { setA(named); setQA(short(named.label)) } else { setB(named); setQB(short(named.label)) }
+    }, 300)
   }
+  const download = () => {
+    if (!a) return
+    void openPlace(a)
+    setDestination(b) // (plans the route from A, if there is a B)
+  }
+  const stop = () => { cancelPlace(); cancelRoute() }
+
+  // the route on the map, once it is planned
+  const routeLine = route.status === 'ready' ? ROUTE.route?.coords ?? null : null
 
   return (
-    <div className="placepick">
-      <PlaceSearch label="A" value={qA} onValue={setQA} placeholder="Start: address or place" onChoose={setA} />
-      <PlaceSearch label="B" value={qB} onValue={setQB} placeholder="Destination (optional): address or place" onChoose={setB}
-        extra={dest ? <button type="button" className="secondary" onClick={() => setB(null)} aria-label="Clear the destination">✕</button> : null} />
-      <div className="pp-tap" role="group" aria-label="Tapping the map sets">
-        <span>Tap the map to set:</span>
-        <button type="button" className={tapSets === 'start' ? 'on' : ''} onClick={() => setTapSets('start')}>A start</button>
-        <button type="button" className={tapSets === 'dest' ? 'on' : ''} onClick={() => setTapSets('dest')}>B destination</button>
+    <div className="mappage">
+      <header className="pagehead">
+        <button type="button" className="iconbtn" aria-label="Back to the main page" onClick={() => { if (downloading) stop(); onBack() }}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
+        <h2>Where do you want to drive?</h2>
+      </header>
+      <div className={`pp-pick${locked ? ' locked' : ''}`}>
+        <PlaceSearch label="A" value={qA} onValue={setQA} placeholder="Start: address or place" onChoose={chooseA} disabled={locked} />
+        <PlaceSearch label="B" value={qB} onValue={setQB} placeholder="Destination (optional): address or place" onChoose={chooseB} disabled={locked}
+          extra={b && !locked ? <button type="button" className="secondary" onClick={() => chooseB(null)} aria-label="Clear the destination">✕</button> : null} />
+        <div className="pp-tap" role="group" aria-label="Tapping the map sets">
+          <span>Tap the map to set:</span>
+          <button type="button" disabled={locked} className={tapSets === 'start' ? 'on' : ''} onClick={() => setTapSets('start')}>A start</button>
+          <button type="button" disabled={locked} className={tapSets === 'dest' ? 'on' : ''} onClick={() => setTapSets('dest')}>B destination</button>
+        </div>
       </div>
-      <MapPicker center={center} marker={start} dest={dest} route={route.status === 'ready' ? ROUTE.route?.coords ?? null : null} tiles={[...REAL.tiles]} onPick={pickOnMap} />
-      {real.status !== 'idle' && (
-        <p className={`pp-msg${real.status === 'error' ? ' pp-err' : ''}`} aria-live="polite">
-          {real.status === 'loading' && <>Loading <b>{short(real.label)}</b>: downloading its roads…</>}
-          {real.status === 'ready' && <><b>{short(real.label)}</b> is ready. {real.msg}</>}
-          {real.status === 'error' && <>{short(real.label)}: {real.msg}</>}
-        </p>
-      )}
-      {real.status === 'idle' && <p className="pp-msg">Search for an address, or tap a street on the map to start there.</p>}
-      {route.status !== 'none' && (
-        <p className={`pp-msg${route.status === 'error' ? ' pp-err' : ''}`} aria-live="polite">
-          {route.status === 'loading' && <>Planning the route…</>}
-          {route.status === 'ready' && <>Route to <b>{short(route.dest)}</b>: {route.msg}</>}
-          {route.status === 'error' && <>Route: {route.msg}</>}
-        </p>
-      )}
-      <p className="pp-note">Map data © OpenStreetMap contributors; routes by OSRM. The roads round the start are downloaded first (shaded blue); more are downloaded as you drive. Stop signs and speed limits are often missing from the map: where they are, the usual US rules are used.</p>
+      <MapPicker center={center} marker={a} dest={b} route={routeLine} tiles={[...REAL.tiles]} onPick={pickOnMap} />
+
+      <div className="pp-status" aria-live="polite">
+        {!locked && real.status !== 'error' && route.status !== 'error' && <p className="pp-msg">{a ? <>Start: <b>{short(a.label)}</b>{b ? <> · Destination: <b>{short(b.label)}</b></> : ' · no destination (free drive)'}</> : 'Search for an address, or tap a street on the map, to choose where to start.'}</p>}
+        {downloading && (
+          <div className="pp-progress">
+            <span className="spinner" aria-hidden="true" />
+            <p className="pp-msg">{real.status === 'loading' ? real.msg : 'Planning the route…'}</p>
+          </div>
+        )}
+        {ready && <p className="pp-msg"><b>Map downloaded.</b> {real.msg}{route.status === 'ready' && <><br />Route: {route.msg}</>}</p>}
+        {real.status === 'error' && <p className="pp-msg pp-err">Could not download the map: {real.msg}</p>}
+        {route.status === 'error' && <p className="pp-msg pp-err">Could not plan the route: {route.msg}</p>}
+      </div>
+
+      <div className="pagefoot">
+        {!locked && (
+          <>
+            <button type="button" className="secondary" onClick={() => { stop(); onBack() }}>Cancel</button>
+            <button type="button" className="primary" disabled={!a} onClick={download}>{real.status === 'error' || route.status === 'error' ? 'Try again' : 'Download map'}</button>
+          </>
+        )}
+        {downloading && <button type="button" className="secondary" onClick={() => { stop(); onBack() }}>Cancel</button>}
+        {ready && (
+          <>
+            <button type="button" className="secondary" onClick={stop}>Change places</button>
+            <button type="button" className="primary" onClick={() => startGame()}>Drive</button>
+          </>
+        )}
+      </div>
+      <p className="pp-note">Map data © OpenStreetMap contributors; routes by OSRM. The roads round the start are downloaded before you drive (shaded blue); more are downloaded as you drive. Stop signs, lights and speed limits are often missing from the map: where they are, the usual US rules are used.</p>
     </div>
   )
 }

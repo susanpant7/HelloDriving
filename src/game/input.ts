@@ -1,6 +1,6 @@
 import { toggleMute } from './audio'
 import { adjust, mirrorAdj, saveMirrors } from './cabinConfig'
-import { input, pauseGame, resumeGame, startGame, toggleSignal } from './sim'
+import { input, pauseGame, resumeGame, startGame, toggleCruise, toggleSignal } from './sim'
 import { setTraffic, setUnits, useGame } from './store'
 
 // A / D turn the head left / right, W / S tilt it up / down; it moves gradually while the key is held and stays where you leave it
@@ -145,7 +145,8 @@ export function installInput() {
       // a quick double press of the down arrow puts the wheel back to straight
       if (!e.repeat) { const now = performance.now(); if (now - lastTap[3] < 320) { input.recentre = true; lastTap[3] = 0 } else lastTap[3] = now }
     }
-    if (e.code === 'KeyC' && !e.repeat) input.laneToggle = true // lane assist on / off
+    if (e.code === 'KeyC' && !e.repeat) toggleCruise() // cruise control on / off
+    if (e.code === 'KeyL' && !e.repeat) input.laneToggle = true // lane assist on / off
     if (e.code === 'Space' && !e.repeat) { stopLook(); recentreView() } // the view back to your default
     if (e.code === 'ArrowLeft') input.left = true
     if (e.code === 'ArrowRight') input.right = true

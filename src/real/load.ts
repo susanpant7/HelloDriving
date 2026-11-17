@@ -170,6 +170,11 @@ async function worker() {
       REAL.tiles.add(key)
       failed.delete(key)
       rebuild()
+      // (before the drive: how far the download has got)
+      if (useGame.getState().real.status === 'loading') {
+        const got = startTiles.filter((k) => REAL.tiles.has(k)).length
+        useGame.setState((st) => ({ real: { ...st.real, msg: `Downloading the roads… ${got} of ${startTiles.length} map tiles` } }))
+      }
     } catch (err) {
       if (s !== session) continue
       failed.set(key, performance.now())
@@ -225,6 +230,18 @@ function ready() {
 
 /** Open a place: the tiles round it are downloaded (or taken from the browser's copy); you can start once they are in. */
 export async function openPlace(p: Place) {
+  forget()
+  REAL.place = p
+  try { localStorage.setItem(PLACE_KEY, JSON.stringify(p)) } catch { /* ignore */ }
+  startTiles = tilesAround(p.lat, p.lon, START_RADIUS)
+  useGame.setState((st) => ({ real: { ...st.real, status: 'loading', msg: `Downloading the roads… 0 of ${startTiles.length} map tiles`, label: p.label, version: st.real.version + 1 } }))
+  Object.assign(aim, { lat: p.lat, lon: p.lon, dLat: 0, dLon: 0 })
+  want(startTiles)
+}
+/** the tiles needed before the drive can start */
+let startTiles: string[] = []
+/** drop the place being opened (or driven): downloads still under way are ignored when they arrive */
+function forget() {
   session++
   clearTimeout(rebuildT); rebuildT = 0
   queue.length = 0
@@ -233,11 +250,12 @@ export async function openPlace(p: Place) {
   elements.clear()
   REAL.tiles.clear()
   REAL.map = null
-  REAL.place = p
-  try { localStorage.setItem(PLACE_KEY, JSON.stringify(p)) } catch { /* ignore */ }
-  useGame.setState((st) => ({ real: { ...st.real, status: 'loading', msg: 'Downloading the roads…', label: p.label, version: st.real.version + 1 } }))
-  Object.assign(aim, { lat: p.lat, lon: p.lon, dLat: 0, dLon: 0 })
-  want(tilesAround(p.lat, p.lon, START_RADIUS))
+  REAL.place = null
+}
+/** Cancel: stop downloading and forget the place (the tiles already downloaded stay in the browser's copy). */
+export function cancelPlace() {
+  forget()
+  useGame.setState((st) => ({ real: { ...st.real, status: 'idle', msg: '', label: '', version: st.real.version + 1 } }))
 }
 
 /** While driving: keep the map loaded round the car (called every second or so). */

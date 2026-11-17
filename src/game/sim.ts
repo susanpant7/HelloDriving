@@ -401,7 +401,9 @@ function fail(reason: string, tips: string[]) {
 const autoLane = { t: 0, on: false, h0: 0, dir: 1 as -1 | 1, p0: 0, w: 4.7, sig: false }
 
 /** Space: an "auto" mode that steers the car smoothly into the middle of its lane and straightens it, then lets go */
-let steerHold = 0, steerHoldDir = 0 // how long a steering key has been held, and which way
+/** how fast the wheel turns while an arrow is held, by Steering sensitivity 1-5 (share of full lock a second: full lock is 1.5 turns,
+ *  so 0.32 is about 170 degrees of steering wheel a second) */
+const STEER_PACE = [0.22, 0.32, 0.45, 0.6, 0.8]
 const autoCentre = { on: false, t: 0, ok: 0, prevH: NaN, dhS: 0 }
 let handSteerT = -99 // when you last steered by hand (lane assist waits a moment after it)
 let arrowHeld = 0 // how long a steering arrow has been held
@@ -451,6 +453,8 @@ const playerObs = () => (WORLD.highway || WORLD.real ? { x: sim.x, z: sim.z, h: 
 /* ---------- lifecycle ---------- */
 let brakeHold = 0 // how long the brake has been held (s)
 const pedalWas = { down: false, up: false } // the pedals last frame (to catch a fresh press)
+/** the indicator: whether the wheel has been turned the way it shows since it was switched on (then straightening up switches it off) */
+const sigTurn = { since: -1, turned: false }
 let overFor = 0, overWarnT = -99 // over the limit (within the margin): for how long, and when you were last reminded
 let redCross: { n: number; stopped: boolean; ntor: boolean; busy: boolean } | null = null // crossed a stop line on red (judged on the way out)
 let lastJunctionExit = -99 // when you last left a junction
@@ -666,10 +670,16 @@ export function stepSim(dt: number) {
     if (realLoad.waiting && sim.t - realLoad.toldT > 6) { realLoad.toldT = sim.t; say('Loading the map ahead: the car waits for it', 'info') }
   } else realLoad.waiting = false
 
-  // ---- the indicator switches itself off when the wheel turns the other way from straight: the right one when you steer left of
-  // centre, the left one when you steer right of centre (as you straighten up after a turn or a lane change). Not on a roundabout,
-  // where you steer left all the way round while showing right for your exit. Pressing the same indicator again also switches it off.
-  if (sim.signal !== 0 && !swap.dir && sim.jn?.kind !== 'round' && sim.steerIn * sim.signal < -0.1) sim.signal = 0 // (not during lane assist's own lane change: it holds the indicator until it is across)
+  // ---- the indicator switches itself off as in a real car: when the wheel comes back to straight after being turned the way you
+  // signalled (the end of the turn), or if you steer firmly the other way. Small movements of the wheel (a hand on a tilted phone, a
+  // gentle drift) leave it on. Not on a roundabout, where you steer left all the way round while showing right for your exit, and
+  // not during lane assist's own lane change (it holds the indicator until it is across). Pressing it again also switches it off.
+  if (sim.signal !== 0 && !swap.dir && sim.jn?.kind !== 'round') {
+    if (sigTurn.since !== sim.signalSince) { sigTurn.since = sim.signalSince; sigTurn.turned = false }
+    const w = sim.steerIn * sim.signal // (+ = turned the way the indicator shows)
+    if (w > 0.3) sigTurn.turned = true
+    if ((sigTurn.turned && w < 0.08) || w < -0.35) sim.signal = 0
+  }
   // ---- reverse: when the car is standing still, a fresh press of the brake puts it in reverse and holding it backs up (slowly);
   // in reverse the accelerator brakes, and pressing it once stopped puts the car back in drive. (Holding the brake as you come to
   // a stop never starts reversing: only a new press made while stopped does.) ----
@@ -734,18 +744,16 @@ export function stepSim(dt: number) {
     const dirIn = (input.right ? 1 : 0) - (input.left ? 1 : 0)
     if (input.wheel !== null) {
       // the on-screen wheel: the wheel is exactly where the finger turned it, and stays there while it is held
-      steerHold = 0; steerHoldDir = 0
       sim.wheel = clamp(input.wheel, -1, 1)
     } else if (dirIn) {
-      // it answers at once and winds on faster the longer the key is held; steering back against the lock is quicker still
-      steerHold = dirIn === steerHoldDir ? steerHold + dt : 0
-      steerHoldDir = dirIn
+      // an arrow held turns the wheel at a steady, hand-over-hand pace (it does not speed up the longer the key is held); the
+      // Steering sensitivity setting sets the pace. Turning back towards straight is a little quicker, as when you unwind a wheel.
+      const pace = STEER_PACE[useGame.getState().steerSens - 1] ?? 0.32
       const against = sim.wheel * dirIn < 0
-      const wr = against ? 2.6 : 0.9 + 1.3 * Math.min(1, steerHold / 0.5)
-      sim.wheel = clamp(sim.wheel + dirIn * wr * dt, -1, 1)
+      sim.wheel = clamp(sim.wheel + dirIn * pace * (against ? 1.6 : 1) * dt, -1, 1)
     } else {
-      steerHold = 0; steerHoldDir = 0
-      sim.wheel = Math.abs(sim.wheel) < 2.2 * dt ? 0 : sim.wheel - Math.sign(sim.wheel) * 2.2 * dt
+      // let go: the wheel unwinds to straight by itself (smoothly, not with a snap)
+      sim.wheel = Math.abs(sim.wheel) < 1.2 * dt ? 0 : sim.wheel - Math.sign(sim.wheel) * 1.2 * dt
     }
   }
   let target = sim.wheel

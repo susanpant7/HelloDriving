@@ -20,6 +20,7 @@ function InfoTip({ id, open, onToggle }: { id: string; open: boolean; onToggle: 
 }
 const SETTING_INFO: Record<string, string> = {"Steering": "How you steer on a phone or tablet. Wheel: a small steering wheel at the bottom left; put a finger on it and turn it round, and the car steers as far as you turn it (let go and it returns to straight). Arrows: hold ◀ ▶ to keep turning the wheel. Tilt phone: hold the phone like a steering wheel and turn it; the way you hold it when you start counts as straight (press the centre screen to make the way you hold it now straight). Tilt phone uses the phone's movement, so Phone motion (looking around by moving the phone) is switched off while it is on.", "Speed units": "Shows speeds and limits in miles per hour or kilometres per hour. The rules are the same either way: the limits on the signs and on the centre screen change with this. (Keyboard: U)", "Phone motion": "On: move the phone to look around, like looking through a window: turn it left or right to turn your head, tilt it up for the rear-view mirror. The eye icon still works as well and adds to it. Press the car's centre screen to make wherever the phone points 'straight ahead' again. Turning well to one side counts as a blind-spot check.", "Phone motion sensitivity": "How far your view turns for a given movement of the phone. 1 needs a big movement, 5 only a small one. 3 is the standard. Only used when Phone motion is on.", "Steering sensitivity": "How quickly the steering wheel turns while you hold left or right. Lower is gentler and easier to keep straight; higher turns sharply for tight corners. The wheel returns to straight when you let go.", "Graphics": "How much drawing work each frame does. High: best look (sharpest picture and mirrors, all screen effects, see furthest). Medium: balanced (a little softer, lighter effects, the rear-view mirror refreshes every other frame). Low: smoothest (plain picture, mirrors refresh every other frame, shorter view). Roads, signs, signals, traffic and the rules are the same at every level. The game also lowers the sharpness by itself for a moment if the frame rate drops.", "Mirror detail": "Full: the mirrors show everything, as far back as you can see ahead, at full sharpness. Light: the mirrors only draw about 200 m behind you, skip small road-wear details and are slightly softer; cars, lane markings, signs and lights are still shown. Use Light if the game stutters: it is the setting that gives the most smoothness back.", "Traffic": "How many other cars there are. The same level means different amounts in different places, as in real life: quiet residential streets, busier city roads, and the most on the highway. On the Mixed course it changes as you drive from one district to another. (Keyboard: 1 to 5)"}
 
+/** The settings, in three groups: driving, phone and tablet controls (on a touch screen), and the picture */
 function Settings() {
   const [info, setInfo] = useState<string | null>(null)
   const traffic = useGame((s) => s.traffic)
@@ -40,6 +41,8 @@ function Settings() {
           <p>{SETTING_INFO[info]}</p>
         </div>
       )}
+      <section className="setgroup">
+        <h3>Driving</h3>
       <div className="setting">
         <div className="setting-head">
           <span className="setlabel">Speed units<InfoTip id="Speed units" open={info === 'Speed units'} onToggle={setInfo} /></span>
@@ -50,7 +53,34 @@ function Settings() {
           <button className={units === 'mph' ? 'on' : ''} onClick={() => setUnits('mph')}>mph</button>
         </div>
       </div>
+      <div className="setting">
+        <div className="setting-head">
+          <span className="setlabel">Steering sensitivity<InfoTip id="Steering sensitivity" open={info === 'Steering sensitivity'} onToggle={setInfo} /></span>
+          <span className="muted">{['Very gentle', 'Gentle', 'Medium', 'Quick', 'Very quick'][steerSens - 1]}</span>
+        </div>
+        <div className="seg" role="group" aria-label="Steering sensitivity">
+          {([1, 2, 3, 4, 5] as const).map((n) => (
+            <button key={n} className={steerSens === n ? 'on' : ''} onClick={() => setSteerSens(n)}>{n}</button>
+          ))}
+        </div>
+      </div>
+      <div className="setting">
+        <div className="setting-head">
+          <span className="setlabel">Traffic<InfoTip id="Traffic" open={info === 'Traffic'} onToggle={setInfo} /></span>
+          <span className="muted" title="Cars around you at this level, by where you drive">{TRAFFIC_LABELS[traffic - 1]} · about {TRAFFIC_RES[traffic - 1]} cars in a residential area, {TRAFFIC_CITY[traffic - 1]} in the city, {HW_TOTAL[traffic - 1]} on the highway{traffic === 5 ? ' (a traffic jam)' : ''}</span>
+          <Key>1</Key><span className="kb-only">–</span><Key>5</Key>
+        </div>
+        <div className="seg" role="group" aria-label="Traffic level">
+          {([1, 2, 3, 4, 5] as const).map((n) => (
+            <button key={n} className={traffic === n ? 'on' : ''} onClick={() => setTraffic(n)}>{n}</button>
+          ))}
+        </div>
+      </div>
+      </section>
       {touch && (
+      <section className="setgroup">
+        <h3>Phone and tablet</h3>
+      <>
         <div className="setting">
           <div className="setting-head">
             <span className="setlabel">Steering<InfoTip id="Steering" open={info === 'Steering'} onToggle={setInfo} /></span>
@@ -63,8 +93,8 @@ function Settings() {
             <button className={steerMode === 'tilt' ? 'on' : ''} onClick={async () => { const ok = await setTiltSteer(true); setTiltErr(!ok); if (ok) setSteerMode('tilt') }}>Tilt phone</button>
           </div>
         </div>
-      )}
-      {touch && (
+      </>
+      <>
         <div className="setting">
           <div className="setting-head">
             <span className="setlabel">Phone motion<InfoTip id="Phone motion" open={info === 'Phone motion'} onToggle={setInfo} /></span>
@@ -75,8 +105,8 @@ function Settings() {
             <button className={lookMode === 'motion' ? 'on' : ''} disabled={steerMode === 'tilt'} onClick={async () => { if (await setMotionLook(true)) setLookMode('motion') }}>On</button>
           </div>
         </div>
-      )}
-      {touch && (
+      </>
+      <>
         <div className="setting">
           <div className="setting-head">
             <span className="setlabel">Phone motion sensitivity<InfoTip id="Phone motion sensitivity" open={info === 'Phone motion sensitivity'} onToggle={setInfo} /></span>
@@ -88,18 +118,11 @@ function Settings() {
             ))}
           </div>
         </div>
+      </>
+      </section>
       )}
-      <div className="setting">
-        <div className="setting-head">
-          <span className="setlabel">Steering sensitivity<InfoTip id="Steering sensitivity" open={info === 'Steering sensitivity'} onToggle={setInfo} /></span>
-          <span className="muted">{['Very gentle', 'Gentle', 'Medium', 'Quick', 'Very quick'][steerSens - 1]}</span>
-        </div>
-        <div className="seg" role="group" aria-label="Steering sensitivity">
-          {([1, 2, 3, 4, 5] as const).map((n) => (
-            <button key={n} className={steerSens === n ? 'on' : ''} onClick={() => setSteerSens(n)}>{n}</button>
-          ))}
-        </div>
-      </div>
+      <section className="setgroup">
+        <h3>Picture</h3>
       <div className="setting">
         <div className="setting-head">
           <span className="setlabel">Graphics<InfoTip id="Graphics" open={info === 'Graphics'} onToggle={setInfo} /></span>
@@ -121,18 +144,7 @@ function Settings() {
           <button className={mirrorLite ? 'on' : ''} onClick={() => setMirrorLite(true)}>Light</button>
         </div>
       </div>
-      <div className="setting">
-        <div className="setting-head">
-          <span className="setlabel">Traffic<InfoTip id="Traffic" open={info === 'Traffic'} onToggle={setInfo} /></span>
-          <span className="muted" title="Cars around you at this level, by where you drive">{TRAFFIC_LABELS[traffic - 1]} · about {TRAFFIC_RES[traffic - 1]} cars in a residential area, {TRAFFIC_CITY[traffic - 1]} in the city, {HW_TOTAL[traffic - 1]} on the highway{traffic === 5 ? ' (a traffic jam)' : ''}</span>
-          <Key>1</Key><span className="kb-only">–</span><Key>5</Key>
-        </div>
-        <div className="seg" role="group" aria-label="Traffic level">
-          {([1, 2, 3, 4, 5] as const).map((n) => (
-            <button key={n} className={traffic === n ? 'on' : ''} onClick={() => setTraffic(n)}>{n}</button>
-          ))}
-        </div>
-      </div>
+      </section>
     </div>
   )
 }
@@ -142,10 +154,11 @@ function ControlsList() {
     <ul className="controls">
       <li><span><Key>↑</Key></span> Accelerator <em>hold to speed up, release to slow down</em></li>
       <li><span><Key>↓</Key></span> Brake / reverse <em>like a real pedal: a tap slows you gently; the longer you hold it, the harder it brakes (firm after about a second, an emergency stop after about two). Once stopped, press it again and hold to back up (R lights on the dashboard); ↑ then stops you and drives forward again</em></li>
-      <li><span><Key>←</Key><Key>→</Key></span> Steer <em>hold to keep turning the wheel; let go and it returns to straight</em></li>
-      <li><span><Key>C</Key></span> Lane assist on / off <em>while on, the car keeps itself in the middle of its lane, even round bends and roundabouts ("LANE ASSIST" glows on the dashboard). Steering by hand overrides it; it takes over again when you let go</em></li>
+      <li><span><Key>←</Key><Key>→</Key></span> Steer <em>hold to turn the wheel at a steady pace (Steering sensitivity in Settings sets how fast); let go and it returns to straight</em></li>
+      <li><span><Key>C</Key></span> Cruise control on / off <em>holds the speed you are doing (from about 11 mph); the brake switches it off. A quick double press of ↑ does the same</em></li>
+      <li><span><Key>L</Key></span> Lane assist on / off <em>while on, the car keeps itself in the middle of its lane, even round bends and roundabouts ("LANE ASSIST" glows on the dashboard). Steering by hand overrides it; it takes over again when you let go</em></li>
       <li><span><Key>Space</Key></span> View back to your default <em>turns your head back to the road, to the view you set in the pause menu (Set default view)</em></li>
-      <li><span><Key>Q</Key><Key>E</Key></span> Left / right indicator <em>press the same one again to switch it off; it also switches itself off when you steer the other way (the right one when you steer left of straight, the left one when you steer right)</em></li>
+      <li><span><Key>Q</Key><Key>E</Key></span> Left / right indicator <em>press the same one again to switch it off; like a real car, it also switches itself off when the wheel comes back to straight after the turn (or if you steer firmly the other way)</em></li>
       <li><span>Drag</span> Look around <em>press and drag with the mouse, or swipe with two fingers on a trackpad (the view holds, tap to look ahead again); aim at a mirror to check it</em></li>
       <li><span><Key>A</Key><Key>D</Key><Key>W</Key><Key>S</Key></span> Turn your head <em>like the wheel: each press turns it a little and it stays (A left, D right, W up, S down; combine them, e.g. A + W). Double-press A or D to look over that shoulder into the blind spot (about 120°).</em></li>
       <li><span><Key>Esc</Key></span> Pause <span className="gap" /><Key>M</Key> mute</li>
@@ -399,8 +412,65 @@ function TouchHelp() {
       <li><span><b>Gas / Brake</b></span> Pedals at the bottom right: the tall green one is the accelerator, the wide red one the brake. Hold the accelerator to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop. Stopped, press the brake again and hold it to back up; the accelerator then stops you and drives forward again</li>
       <li><span><b>Steer</b></span> Pick how in Settings → Steering. Wheel (bottom left): put a finger on it and turn it round; the car steers as far as you turn it, and it returns to straight when you let go. Arrows: hold ◀ ▶. Tilt phone: turn the phone like a steering wheel (press the centre screen to make the way you hold it now count as straight). With the wheel or arrows, two quick little nudges / taps the same way change lane. Lane assist (the car between two lane lines, right edge, 40% down): tap to switch it on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off</li>
       <li><span><b>Eye</b></span> Just left of the car's steering wheel: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
-      <li><span><b>⬅ ➡</b></span> Left edge of the screen: left and right indicator. Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
+      <li><span><b>⬅ ➡</b></span> Left edge of the screen: left and right indicator. Tap to switch on, tap again to switch off; like a real car, it also switches itself off when the wheel comes back to straight after the turn</li>
     </ul>
+  )
+}
+
+/**
+ * Before driving: the main page (what to practise, then Drive), the settings page (the gear icon), and for a real place the map
+ * page (choose and download the place, then Drive). On a phone these pages work upright as well as sideways.
+ */
+function MainMenu() {
+  const [page, setPage] = useState<'home' | 'settings' | 'map'>('home')
+  const mode = useGame((s) => s.mode)
+  const { touch } = useViewport()
+  const drive = () => (mode === 'real' ? setPage('map') : startGame())
+  const back = (
+    <button type="button" className="iconbtn" aria-label="Back to the main page" onClick={() => setPage('home')}>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    </button>
+  )
+  return (
+    <div className="overlay menu">
+      <div className="panel wide page">
+        {page === 'home' && (
+          <>
+            <header className="pagehead home">
+              <div>
+                <div className="logo">Hello <span>Driving</span></div>
+                <p>Learn to drive: lanes, traffic lights, junctions and roundabouts. Check your mirrors, signal, then move. A crash ends the run. Mistakes are flagged as you make them.</p>
+              </div>
+              <button type="button" className="iconbtn gear" aria-label="Settings" title="Settings" onClick={() => setPage('settings')}>
+                <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3.2" />
+                  <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+                </svg>
+              </button>
+            </header>
+            <section className="practice">
+              <h3>Where do you want to practise?</h3>
+              <ModePicker />
+            </section>
+            <div className="pagefoot">
+              <button type="button" className="primary" onClick={drive}>{mode === 'real' ? 'Next: choose the place' : `Drive: ${modeTitle(mode)}`} {!touch && mode !== 'real' && <Key>Enter</Key>}</button>
+            </div>
+          </>
+        )}
+        {page === 'settings' && (
+          <>
+            <header className="pagehead">{back}<h2>Settings</h2></header>
+            <Settings />
+            <section className="setgroup">
+              <h3>Controls</h3>
+              {touch ? <TouchHelp /> : <ControlsList />}
+            </section>
+            <div className="pagefoot"><button type="button" className="primary" onClick={() => setPage('home')}>Done</button></div>
+          </>
+        )}
+        {page === 'map' && <PlacePicker onBack={() => setPage('home')} />}
+      </div>
+    </div>
   )
 }
 
@@ -499,7 +569,9 @@ function PlayingHud() {
         <span><Key>↓</Key> brake</span>
         <span><Key>←</Key><Key>→</Key> steer</span>
         <span><Key>Q</Key><Key>E</Key> indicators</span>
-        <span><Key>C</Key> lane assist</span>
+        <span><Key>C</Key> cruise</span>
+        <span><Key>L</Key> lane assist</span>
+        <span><Key>Space</Key> default view</span>
         <span>Drag / 2-finger swipe: look around · tap to look ahead</span>
         <span><Key>Esc</Key> pause</span>
       </div>
@@ -509,8 +581,6 @@ function PlayingHud() {
 
 export function Hud() {
   const status = useGame((s) => s.status)
-  const realStatus = useGame((s) => s.real.status)
-  const routeStatus = useGame((s) => s.route.status)
   const reason = useGame((s) => s.crashReason)
   const pauseReason = useGame((s) => s.pauseReason)
   const tips = useGame((s) => s.crashTips)
@@ -536,7 +606,7 @@ export function Hud() {
     <div className={`hud${touch ? ' touch' : ''}`}>
       <FadeCard />
       {status === 'playing' && <PlayingHud />}
-      {touch && portrait && (
+      {touch && portrait && status !== 'menu' && (
         <div className="overlay rotate">
           <div className="panel">
             <svg viewBox="0 0 64 64" width="72" height="72" aria-hidden="true"><rect x="22" y="8" width="20" height="36" rx="4" fill="none" stroke="currentColor" strokeWidth="3" /><path d="M14 48c6 8 22 10 36 0m0 0l-8-1m8 1l1-8" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -546,36 +616,7 @@ export function Hud() {
         </div>
       )}
 
-      {status === 'menu' && (
-        <div className="overlay">
-          <div className="panel wide">
-            <header>
-              <div className="logo">Hello <span>Driving</span></div>
-              <p>Learn to drive: lanes, traffic lights, junctions and roundabouts. Check your mirrors, signal, then move. A crash ends the run. Mistakes are flagged as you make them.</p>
-            </header>
-            <section className="practice">
-              <h3>What do you want to practise?</h3>
-              <ModePicker />
-              {mode === 'real' && <PlacePicker />}
-            </section>
-            <div className="cols">
-              <section>
-                <h3>Controls</h3>
-                {touch ? <TouchHelp /> : <ControlsList />}
-              </section>
-              <section>
-                <h3>Settings</h3>
-                <Settings />
-              </section>
-            </div>
-            {mode === 'real' && (realStatus !== 'ready' || routeStatus === 'loading') ? (
-              <button className="primary" disabled>{realStatus === 'loading' ? 'Loading the map…' : realStatus === 'error' ? 'Pick another place' : realStatus === 'idle' ? 'Choose a place to start' : 'Planning the route…'}</button>
-            ) : (
-              <button className="primary" onClick={start}>Start: {modeTitle(mode)} <Key>Enter</Key></button>
-            )}
-          </div>
-        </div>
-      )}
+      {status === 'menu' && <MainMenu />}
 
       {status === 'paused' && pauseReason === 'offroad' && (
         <div className="overlay warn">

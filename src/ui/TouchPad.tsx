@@ -24,7 +24,8 @@ export function EyeControl() {
         const w = el.offsetWidth, h = el.offsetHeight
         const x = Math.max(8, Math.min(window.innerWidth - w - 8, wheelScreen.left - w - 10))
         const y = Math.max(8, Math.min(window.innerHeight - h - 8, wheelScreen.y - h / 2))
-        if (Math.abs(x - lx) > 0.5 || Math.abs(y - ly) > 0.5) { lx = x; ly = y; el.style.left = `${x}px`; el.style.top = `${y}px`; el.style.visibility = '' }
+        // (written as "not within half a pixel" so the very first placement, when there is no previous one (NaN), also counts)
+        if (!(Math.abs(x - lx) <= 0.5 && Math.abs(y - ly) <= 0.5)) { lx = x; ly = y; el.style.left = `${x}px`; el.style.top = `${y}px`; el.style.visibility = '' }
       }
       raf = requestAnimationFrame(tick)
     }

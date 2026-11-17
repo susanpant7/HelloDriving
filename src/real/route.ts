@@ -76,6 +76,12 @@ export async function planRoute() {
     setStatus('error', e instanceof Error ? e.message : 'Could not plan a route')
   }
 }
+/** Cancel planning (the destination is kept for next time). */
+export function cancelRoute() {
+  planId++
+  ROUTE.route = null; ROUTE.xy = null
+  setStatus('none')
+}
 export function resetProgress() {
   Object.assign(ROUTE, { s: 0, seg: 0, offT: 0, rerouting: false, arrived: false, xy: null })
 }
