@@ -3,7 +3,7 @@ import { armClosed, noTurnOnRed, arrowPhase, streetLimit, resStyle, PARKED, jLan
 import { FRONT_PITCH, MIRROR_AIM, adjust } from './cabinConfig'
 import { layoutOf, nav, navJunctionExit, navUpdate, startRoute, turnName } from './nav'
 import { WORLD } from './course'
-import { REAL, keepLoadedAlong, keepLoadedAround, loadedAt } from '../real/load'
+import { REAL, keepLoadedAround, loadedAt } from '../real/load'
 import { ROUTE, followRoute, resetProgress, routeAt, routeStart } from '../real/route'
 import { initRealTraffic, stepRealTraffic } from '../real/realTraffic'
 import { lightFor } from '../real/signals'
@@ -661,10 +661,10 @@ export function stepSim(dt: number) {
   const onRoad = WORLD.highway ? hwOnRoad(sim.x, sim.z) : WORLD.real ? !REAL.map || !loadedAt(sim.x, sim.z) || onRealRoad(REAL.map, sim.x, sim.z) : onAsphalt(sim.x, sim.z)
   if (WORLD.real && REAL.map) {
     if ((realLoad.t += dt) > 1) {
-      // download the map ahead as you drive: round the car, and along the next 1.5 km of the route
+      // download the map ahead as you drive: the tile the car is heading into (on a route: the next 500 m of the route)
       realLoad.t = 0
-      keepLoadedAround(sim.x, sim.z, sim.h)
-      if (ROUTE.route && !ROUTE.arrived) { const pts = []; for (let s = ROUTE.s; s < ROUTE.s + 1500; s += 250) { const q = routeAt(s); if (q) pts.push(q) } keepLoadedAlong(pts) }
+      const along = ROUTE.route && !ROUTE.arrived ? [routeAt(ROUTE.s + 250), routeAt(ROUTE.s + 500)].filter((q): q is { lat: number; lon: number } => !!q) : undefined
+      keepLoadedAround(sim.x, sim.z, sim.dir < 0 ? sim.h + Math.PI : sim.h, along)
     }
     realLoad.waiting = sim.speed > 0.5 && !loadedAt(sim.x - Math.sin(sim.h) * (12 + sim.speed * 2), sim.z - Math.cos(sim.h) * (12 + sim.speed * 2))
     if (realLoad.waiting && sim.t - realLoad.toldT > 6) { realLoad.toldT = sim.t; say('Loading the map ahead: the car waits for it', 'info') }

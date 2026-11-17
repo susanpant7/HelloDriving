@@ -2,9 +2,11 @@
  * Real places: finding a place and downloading its roads, using OpenStreetMap's free public services (Nominatim for the address
  * search, Overpass for the map data).
  *
- * The world is cut into tiles of 0.01 x 0.01 degrees (about 1.1 x 0.9 km in the US). Only the tiles round the starting point are
- * needed to start driving; while you drive, the tiles ahead are downloaded in the background (see `keepLoadedAround`). Every tile is
- * kept in the browser (IndexedDB), so a place opens straight away the next time, even offline.
+ * The world is cut into tiles of 0.01 x 0.01 degrees (about 1.1 x 0.9 km in the US). Only the roads are downloaded (no buildings).
+ * The tile with the starting point is all that is needed to start driving; while you drive, the tile the car is heading into is
+ * downloaded in the background (see `keepLoadedAround`), and only the 4 tiles nearest the car are kept in memory: the furthest one is
+ * dropped when a new one arrives. Every tile downloaded is also kept in the browser (IndexedDB), so going back to one, or opening the
+ * place another day, needs no download (and works offline).
  */
 import { useGame } from '../game/store'
 import { convertOsm, toLatLon, type OsmData, type RealMap } from './roads'
@@ -15,10 +17,10 @@ export interface Place { label: string; lat: number; lon: number }
 export const REAL: { map: RealMap | null; place: Place | null; tiles: Set<string> } = { map: null, place: null, tiles: new Set() }
 
 const TILE = 0.01 // degrees
-/** before you can start: the tiles within this distance of the start (m) */
-const START_RADIUS = 450
-/** while driving: keep the tiles within this distance of the car loaded (m) */
-const DRIVE_RADIUS = 750
+/** how many tiles are kept in memory at once */
+const MAX_TILES = 4
+/** while driving: how far ahead (m) the map must be there (the tiles under these points are downloaded first and never dropped) */
+const LOOK_AHEAD = [250, 500]
 
 const PLACE_KEY = 'driveme.realPlace'
 
@@ -88,14 +90,6 @@ async function cachePut(key: string, text: string) {
 
 /* ---------------- tiles ---------------- */
 const tileKey = (i: number, j: number) => `${i},${j}`
-/** the tiles that come within `r` metres of a point */
-function tilesAround(lat: number, lon: number, r: number): string[] {
-  const dLat = r / 110540, dLon = r / (111320 * Math.cos((lat * Math.PI) / 180))
-  const out: string[] = []
-  for (let i = Math.floor((lat - dLat) / TILE); i <= Math.floor((lat + dLat) / TILE); i++)
-    for (let j = Math.floor((lon - dLon) / TILE); j <= Math.floor((lon + dLon) / TILE); j++) out.push(tileKey(i, j))
-  return out
-}
 function tileQuery(key: string) {
   const [i, j] = key.split(',').map(Number)
   const bb = `${(i * TILE).toFixed(4)},${(j * TILE).toFixed(4)},${((i + 1) * TILE).toFixed(4)},${((j + 1) * TILE).toFixed(4)}`
@@ -106,9 +100,7 @@ way["highway"~"^(${roads})$"](${bb})->.r;
 .r >;
 out skel qt;
 node["highway"~"^(stop|give_way|traffic_signals|turning_circle|turning_loop)$"](${bb});
-out body qt;
-way["building"](${bb});
-out geom qt;`
+out body qt;`
 }
 
 /** all the map data downloaded for this drive, each item once (tiles overlap where a road or building crosses their edge) */
@@ -128,7 +120,9 @@ async function fetchTile(key: string): Promise<OsmData> {
   let last = 'Download failed'
   for (const url of SERVERS) {
     try {
-      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: tileQuery(key) }) })
+      // (a request that hangs is given up after 30 s, so it never holds up the tiles behind it)
+      const ac = new AbortController(), to = setTimeout(() => ac.abort(), 30000)
+      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: tileQuery(key) }), signal: ac.signal }).finally(() => clearTimeout(to))
       if (!r.ok) { last = r.status === 429 || r.status === 504 ? 'The map server is busy: try again in a minute' : `Download failed (${r.status})`; continue }
       const text = await r.text()
       const data = JSON.parse(text) as OsmData
@@ -166,9 +160,9 @@ async function worker() {
     try {
       const data = await fetchTile(key)
       if (s !== session) continue
-      for (const e of data.elements) elements.set(`${e.type}/${(e as { id: number }).id}`, e)
-      REAL.tiles.add(key)
+      addTile(key, data)
       failed.delete(key)
+      evict()
       rebuild()
       // (before the drive: how far the download has got)
       if (useGame.getState().real.status === 'loading') {
@@ -221,7 +215,7 @@ function rebuild() {
     settle()
   }, 60)
 }
-const summary = (m: RealMap) => `${m.stats.km.toFixed(1)} km of road · ${m.stats.stopsFromMap + m.stats.stopsGuessed} stop signs (${m.stats.stopsGuessed} worked out) · ${m.buildings.length} buildings`
+const summary = (m: RealMap) => `${m.stats.km.toFixed(1)} km of road · ${m.stats.stopsFromMap + m.stats.stopsGuessed} stop signs (${m.stats.stopsGuessed} worked out)`
 function ready() {
   const m = REAL.map
   if (!m) return
@@ -233,7 +227,8 @@ export async function openPlace(p: Place) {
   forget()
   REAL.place = p
   try { localStorage.setItem(PLACE_KEY, JSON.stringify(p)) } catch { /* ignore */ }
-  startTiles = tilesAround(p.lat, p.lon, START_RADIUS)
+  startTiles = [tileOf(p.lat, p.lon)]
+  keep = startTiles
   useGame.setState((st) => ({ real: { ...st.real, status: 'loading', msg: `Downloading the roads… 0 of ${startTiles.length} map tiles`, label: p.label, version: st.real.version + 1 } }))
   Object.assign(aim, { lat: p.lat, lon: p.lon, dLat: 0, dLon: 0 })
   want(startTiles)
@@ -248,6 +243,9 @@ function forget() {
   pending.clear()
   failed.clear()
   elements.clear()
+  tileItems.clear()
+  refs.clear()
+  keep = []
   REAL.tiles.clear()
   REAL.map = null
   REAL.place = null
@@ -258,17 +256,59 @@ export function cancelPlace() {
   useGame.setState((st) => ({ real: { ...st.real, status: 'idle', msg: '', label: '', version: st.real.version + 1 } }))
 }
 
-/** While driving: keep the map loaded round the car (called every second or so). */
-export function keepLoadedAround(x: number, z: number, h: number) {
+/**
+ * While driving (every second or so): the tile the car is on and the tile(s) it is heading into must be there. "Ahead" is the way the
+ * car is pointing, or, on a route, the route itself (`ahead`: the points 250 and 500 m further along it).
+ */
+export function keepLoadedAround(x: number, z: number, h: number, ahead?: Array<{ lat: number; lon: number }>) {
   const m = REAL.map
   if (!m) return
   const { lat, lon } = toLatLon(m, x, z)
   Object.assign(aim, { lat, lon, dLat: Math.cos(h), dLon: -Math.sin(h) }) // (heading h: forward is (-sin h, -cos h) in x / z; north is -z)
-  want(tilesAround(lat, lon, DRIVE_RADIUS))
+  const pts = ahead?.length ? ahead : LOOK_AHEAD.map((d) => toLatLon(m, x - Math.sin(h) * d, z - Math.cos(h) * d))
+  keep = [...new Set([tileOf(lat, lon), ...pts.map((p) => tileOf(p.lat, p.lon))])]
+  // tiles queued earlier that the car no longer needs (it has moved on, or turned) are dropped from the queue
+  for (let n = queue.length - 1; n >= 0; n--) if (!keep.includes(queue[n])) { pending.delete(queue[n]); queue.splice(n, 1) }
+  want(keep)
 }
-/** While driving a route: also keep the tiles along the next stretch of it loaded. */
-export function keepLoadedAlong(points: Array<{ lat: number; lon: number }>) {
-  for (const p of points) want(tilesAround(p.lat, p.lon, 250))
+
+/* ---------------- tiles in memory ---------------- */
+const tileOf = (lat: number, lon: number) => tileKey(Math.floor(lat / TILE), Math.floor(lon / TILE))
+/** the tiles needed right now (never dropped) */
+let keep: string[] = []
+/** which map items each tile brought, and how many loaded tiles share each item (a road crossing a tile edge is in both) */
+const tileItems = new Map<string, string[]>()
+const refs = new Map<string, number>()
+function addTile(key: string, data: OsmData) {
+  const items: string[] = []
+  for (const e of data.elements) {
+    if (e.type === 'way' && (e as { tags?: Record<string, string> }).tags?.building) continue // (no buildings: tiles saved by an older version had them)
+    const k = `${e.type}/${(e as { id: number }).id}`
+    items.push(k)
+    elements.set(k, e)
+    refs.set(k, (refs.get(k) ?? 0) + 1)
+  }
+  tileItems.set(key, items)
+  REAL.tiles.add(key)
+}
+/** more than MAX_TILES in memory: drop the ones furthest from the car (not the ones it is on or heading into) */
+function evict() {
+  while (REAL.tiles.size > MAX_TILES) {
+    let worst = '', wd = -1
+    for (const k of REAL.tiles) {
+      if (keep.includes(k)) continue
+      const [i, j] = k.split(',').map(Number)
+      const d = Math.hypot((i + 0.5) * TILE - aim.lat, ((j + 0.5) * TILE - aim.lon) * Math.cos((aim.lat * Math.PI) / 180))
+      if (d > wd) { wd = d; worst = k }
+    }
+    if (!worst) return
+    for (const k of tileItems.get(worst) ?? []) {
+      const n = (refs.get(k) ?? 1) - 1
+      if (n <= 0) { refs.delete(k); elements.delete(k) } else refs.set(k, n)
+    }
+    tileItems.delete(worst)
+    REAL.tiles.delete(worst)
+  }
 }
 /** are the tiles under this point loaded? (if not, the road there simply has not arrived yet) */
 export function loadedAt(x: number, z: number) {

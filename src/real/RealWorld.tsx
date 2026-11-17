@@ -77,7 +77,11 @@ export function RealWorld() {
     const m = REAL.map
     if (!m) { clear(); work.list = []; return }
     work.list = []
-    for (const b of tileBoxes()) {
+    const boxes = tileBoxes()
+    // tiles dropped from memory (the car has moved on): their roads, scenery and signs go too
+    const now = new Set(boxes.map((b) => b.key))
+    for (const [key, t] of built) if (!now.has(key)) { root.remove(t.group); t.dispose(); built.delete(key) }
+    for (const b of boxes) {
       const sig = tileSignature(m, b)
       if (built.get(b.key)?.sig !== sig) work.list.push({ key: b.key, box: b, sig })
     }
