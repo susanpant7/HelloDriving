@@ -1,0 +1,17 @@
+
+Biggest wins:
+
+Automatic quality. Measure the frame rate while you drive and lower resolution or mirror quality if it drops below about 50 fps, then raise it again when there's headroom. It works with the graphics setting.
+Cheaper mirrors. In the mirrors, skip details you can't make out there, such as distant trees, road wear and small props, and shorten what they draw behind you. This keeps the mirrors sharp but cuts their cost by about a third.
+Distant trees as flat images. Draw far trees as flat pictures and only nearby ones as 3D, the same way distant cars are already simplified.
+Physics separate from frame rate. Run the driving physics and traffic at a fixed 60 steps per second regardless of frame rate. Steering and braking then feel the same on slow and fast devices, and a frame drop never makes the car jump.
+Traffic off the main thread. Move the traffic and rules logic to a background thread (a Web Worker) so it never competes with drawing.
+Realism with almost no cost:
+
+Baked lighting and shadows. Soft shadows under cars, trees and buildings, painted once into the textures rather than computed every frame.
+Smaller textures. A compressed texture format (KTX2) uses about four times less memory, so the game loads faster and stutters less.
+Sound. Tyre noise that grows with speed, indicator ticking, the brakes, horns from other cars, and wind on the highway.
+Driving feel. A little body roll in turns and nose-dip when braking, mainly in the view and the mirrors.
+More life on the roads. Pedestrians at crosswalks (giving way to them is a key US rule), cyclists, school-zone signs, bus stops and parked delivery vans.
+Lighting conditions. Dusk, night with headlights and rain, using light settings that don't need costly real-time lights.
+Weather and road effects. Wet-road reflections or fog that change how much grip you have and how far you can see. These make driving harder in a realistic way rather than just changing the look.
