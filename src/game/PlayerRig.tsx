@@ -8,7 +8,7 @@ import { CARPLAY, EYE, GLASS, FRONT_PITCH, FRONT_YAW, adjust, mirrorAdj, mirrorS
 import { MirrorGlass, mirrorShape } from './mirrorGeom'
 import { input, sim } from './sim'
 import { renderPose } from './World'
-import { recentreView, steerTap } from './input'
+import { recentreTilt, recentreView } from './input'
 import { useGame } from './store'
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -154,82 +154,13 @@ export function PlayerRig() {
     }
   }, [])
 
-  // Steer with the car's own steering wheel: put a finger (or the mouse) on it and turn it round. The finger is followed in the plane
-  // of the wheel, so the wheel turns exactly as far as the finger goes round it (three turns lock to lock, like the real car).
-  // Let go and it returns to straight; grab it again within a moment and it is still where you left it (hand over hand).
-  const gl = useThree((st) => st.gl)
-  useEffect(() => {
-    const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane(), hit = new THREE.Vector3()
-    const inv = new THREE.Matrix4(), n = new THREE.Vector3(), o = new THREE.Vector3()
-    const TURN = Math.PI * 2 * 1.5 // wheel angle (rad) at full lock
-    let id = -1, last = 0, ang = 0, t0 = 0, peak = 0, letGo = 0
-    /** where the pointer is on the wheel: angle round the hub (rad, + = anticlockwise as the driver sees it) and distance from it (m) */
-    const onWheel = (e: PointerEvent) => {
-      const frame = wheel.current?.parent
-      if (!frame) return null
-      const r = gl.domElement.getBoundingClientRect()
-      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
-      ray.setFromCamera(ndc, camera)
-      frame.updateWorldMatrix(true, false)
-      o.setFromMatrixPosition(frame.matrixWorld)
-      n.set(0, 0, 1).transformDirection(frame.matrixWorld)
-      plane.setFromNormalAndCoplanarPoint(n, o)
-      if (!ray.ray.intersectPlane(plane, hit)) return null
-      hit.applyMatrix4(inv.copy(frame.matrixWorld).invert())
-      return { a: Math.atan2(hit.y, hit.x), d: Math.hypot(hit.x, hit.y) }
-    }
-    const down = (e: PointerEvent) => {
-      if (id !== -1 || (e.target as HTMLElement)?.tagName !== 'CANVAS' || useGame.getState().status !== 'playing') return
-      const w = onWheel(e)
-      if (!w || w.d > 0.3 || w.d < 0.03) return // the rim and spokes (about 19 cm round), with a little to spare for a fingertip
-      id = e.pointerId
-      last = w.a
-      clearTimeout(letGo)
-      ang = (input.wheel ?? sim.wheel) * TURN // pick it up where it is (also mid-way back to straight)
-      input.wheel = ang / TURN
-      t0 = performance.now(); peak = 0
-    }
-    const move = (e: PointerEvent) => {
-      if (e.pointerId !== id) return
-      const w = onWheel(e)
-      if (!w || w.d < 0.03) return // over the very middle the angle jumps about
-      let d = w.a - last
-      if (d > Math.PI) d -= Math.PI * 2
-      else if (d < -Math.PI) d += Math.PI * 2
-      last = w.a
-      ang = Math.max(-TURN, Math.min(TURN, ang - d)) // clockwise (as the driver sees it) = right
-      if (Math.abs(ang) > Math.abs(peak)) peak = ang
-      input.wheel = ang / TURN
-    }
-    const up = (e: PointerEvent) => {
-      if (e.pointerId !== id) return
-      id = -1
-      // two quick little nudges the same way ask for a lane change (as a double tap of an arrow key does)
-      const nudge = performance.now() - t0 < 300 && Math.abs(peak) > 0.1 && Math.abs(peak) < 1.2
-      if (nudge) { input.wheel = null; steerTap(peak > 0 ? 1 : -1); return }
-      letGo = window.setTimeout(() => { if (id === -1) input.wheel = null }, 350)
-    }
-    window.addEventListener('pointerdown', down)
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-    window.addEventListener('pointercancel', up)
-    return () => {
-      clearTimeout(letGo)
-      input.wheel = null
-      window.removeEventListener('pointerdown', down)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      window.removeEventListener('pointercancel', up)
-    }
-  }, [camera, gl])
-
   // pressing the CarPlay screen (an invisible button over it) recentres the view
   const cpRect = useRef({ x0: 0, x1: 0, y0: 0, y1: 0, ok: false })
   useEffect(() => {
     const down = (e: PointerEvent) => {
       if ((e.target as HTMLElement)?.tagName !== 'CANVAS' || useGame.getState().status !== 'playing') return
       const r = cpRect.current
-      if (r.ok && e.clientX > r.x0 && e.clientX < r.x1 && e.clientY > r.y0 && e.clientY < r.y1) recentreView()
+      if (r.ok && e.clientX > r.x0 && e.clientX < r.x1 && e.clientY > r.y0 && e.clientY < r.y1) { recentreView(); recentreTilt() } // (tilt steering: the way the phone is held now counts as straight)
     }
     window.addEventListener('pointerdown', down)
     return () => window.removeEventListener('pointerdown', down)
@@ -258,6 +189,16 @@ export function PlayerRig() {
       e.x = (proj.x * 0.5 + 0.5) * size.width
       e.y = (-proj.y * 0.5 + 0.5) * size.height
       e.r = Math.max(30, (rad * size.height * 1.3) / Math.max(0.3, dist))
+      // the exact outline on screen: the glass's corners, grown a little for the housing round it
+      const m = MIRRORS[k === 'left' ? 0 : k === 'center' ? 1 : 2]
+      const b = e.box
+      b.x0 = b.y0 = Infinity; b.x1 = b.y1 = -Infinity
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        proj.set(sx * m.size[0] * 0.62, sy * m.size[1] * 0.68, 0).applyQuaternion(m.quat).add(m.pos).applyAxisAngle(UP, renderPose.h).add(rig.current.position).project(camera)
+        if (proj.z > 1) e.ok = false
+        const px = (proj.x * 0.5 + 0.5) * size.width, py = (-proj.y * 0.5 + 0.5) * size.height
+        b.x0 = Math.min(b.x0, px); b.x1 = Math.max(b.x1, px); b.y0 = Math.min(b.y0, py); b.y1 = Math.max(b.y1, py)
+      }
     }
     const crashed = useGame.getState().status === 'crashed'
     const g = rig.current

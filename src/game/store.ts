@@ -1,6 +1,7 @@
 import { IS_COARSE } from './device'
 /** your own default view: the resting view turned (yaw, rad, + = left) and tilted (pitch, rad, + = up), and your head moved in the seat
  *  (metres: x = right, y = up, z = back), so the whole car sits a little left / right / higher / lower / closer in the picture */
+export type SteerMode = 'wheel' | 'arrows' | 'tilt'
 export interface ViewOffset { yaw: number; pitch: number; x: number; y: number; z: number }
 export const VIEW0: ViewOffset = { yaw: 0, pitch: 0, x: 0, y: 0, z: 0 }
 
@@ -63,6 +64,8 @@ interface GameState {
   traffic: 1 | 2 | 3 | 4 | 5
   /** how you look around on a phone: the eye icon, or by moving the phone */
   lookMode: 'eye' | 'motion'
+  /** how you steer on a phone: a small steering wheel, arrow buttons, or by tilting the phone like a wheel */
+  steerMode: SteerMode
   /** steering sensitivity 1 (gentle) .. 5 (quick) */
   steerSens: 1 | 2 | 3 | 4 | 5
   /** how far the view turns for a given movement of the phone (phone-motion look): 1 (least) .. 5 (most) */
@@ -123,6 +126,7 @@ const save = (key: string, v: unknown) => {
 
 // React-facing state only. The per-frame simulation lives in sim.ts and is
 // synced into this store ~10x per second so the HUD doesn't re-render at 60fps.
+const STEER0 = load<SteerMode>('driveme.steerMode', 'wheel', (v) => v === 'wheel' || v === 'arrows' || v === 'tilt')
 export const useGame = create<GameState>(() => ({
   status: 'menu',
   hud: initialHud,
@@ -141,7 +145,9 @@ export const useGame = create<GameState>(() => ({
   fade: null,
   adjusting: false,
   units: load<Units>('driveme.units', 'mph', (v) => v === 'kmh' || v === 'mph'),
-  lookMode: load<'eye' | 'motion'>('driveme.look', 'eye', (v) => v === 'eye' || v === 'motion'),
+  // (tilt steering and phone-motion look both use the phone's movement: only one can be on)
+  steerMode: STEER0,
+  lookMode: STEER0 === 'tilt' ? 'eye' : load<'eye' | 'motion'>('driveme.look', 'eye', (v) => v === 'eye' || v === 'motion'),
   steerSens: load<1 | 2 | 3 | 4 | 5>('driveme.steer', 2, (v) => [1, 2, 3, 4, 5].includes(v as number)),
   motionSens: load<1 | 2 | 3 | 4 | 5>('driveme.motion', 3, (v) => [1, 2, 3, 4, 5].includes(v as number)),
   mirrorLite: load<boolean>('driveme.mirrorLite', false, (v) => v === true || v === false),
@@ -154,6 +160,11 @@ export const useGame = create<GameState>(() => ({
 export const setUnits = (u: Units) => {
   save('driveme.units', u)
   useGame.setState({ units: u })
+}
+export const setSteerMode = (m: SteerMode) => {
+  save('driveme.steerMode', m)
+  useGame.setState({ steerMode: m })
+  if (m === 'tilt' && useGame.getState().lookMode === 'motion') setLookMode('eye') // the phone's movement now steers
 }
 export const setLookMode = (m: 'eye' | 'motion') => {
   save('driveme.look', m)

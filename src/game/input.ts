@@ -264,3 +264,41 @@ export async function setMotionLook(on: boolean): Promise<boolean> {
   window.addEventListener('deviceorientation', motionHandler)
   return true
 }
+
+/* ---------- tilt steering: hold the phone like a steering wheel and turn it ---------- */
+let tiltHandler: ((e: DeviceMotionEvent) => void) | null = null
+const tilt = { base: null as null | { x: number; y: number }, s: 0 }
+/** the way you hold the phone now counts as "straight" (also done by pressing the centre screen) */
+export function recentreTilt() { tilt.base = null }
+/**
+ * Turn the phone like a steering wheel (about the axis through the screen). The angle is measured from the way you held it when it
+ * started (or was last recentred), using gravity in the plane of the screen, so it works in either landscape direction and on any phone.
+ * Returns false if the device has no motion sensor or permission was denied.
+ */
+export async function setTiltSteer(on: boolean): Promise<boolean> {
+  if (tiltHandler) { window.removeEventListener('devicemotion', tiltHandler); tiltHandler = null; input.wheel = null }
+  if (!on) return true
+  const DM = typeof DeviceMotionEvent !== 'undefined' ? (DeviceMotionEvent as unknown as { requestPermission?: () => Promise<'granted' | 'denied'> }) : null
+  if (!DM) return false
+  try {
+    if (typeof DM.requestPermission === 'function' && (await DM.requestPermission()) !== 'granted') return false
+  } catch { return false }
+  tilt.base = null; tilt.s = 0
+  const DEAD = 0.035 // rad (2 degrees): holding it roughly straight drives straight
+  const FULL = 0.62 // rad (35 degrees): full lock
+  tiltHandler = (e) => {
+    const g = e.accelerationIncludingGravity
+    if (!g || g.x == null || g.y == null) return
+    if (Math.hypot(g.x, g.y) < 3) return // the phone lies nearly flat: no clear "down" in the screen to steer by
+    if (!tilt.base) tilt.base = { x: g.x, y: g.y }
+    const b = tilt.base
+    // how far "down" has swung round in the screen since the start: + = the phone turned clockwise (as you see it) = steer right.
+    // (iOS reports gravity the other way round from Android; flipping both vectors leaves this angle unchanged)
+    const a = Math.atan2(b.x * g.y - b.y * g.x, b.x * g.x + b.y * g.y)
+    const t = Math.abs(a) < DEAD ? 0 : a - Math.sign(a) * DEAD
+    tilt.s += (t - tilt.s) * 0.35 // a little smoothing: the sensor is noisy
+    input.wheel = clamp(tilt.s / FULL, -1, 1)
+  }
+  window.addEventListener('devicemotion', tiltHandler)
+  return true
+}

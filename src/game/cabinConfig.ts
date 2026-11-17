@@ -57,7 +57,13 @@ export const mirrorAdj: Record<'left' | 'center' | 'right', { yaw: number; pitch
 export const adjust = { sel: null as null | 'left' | 'center' | 'right', dragging: false }
 export const saveMirrors = () => { try { localStorage.setItem('driveme.mirrors2', JSON.stringify(mirrorAdj)) } catch { /* ignore */ } }
 /** where each mirror (and the dash screen) currently is on screen, in pixels; filled in every frame by the camera rig */
-export const mirrorScreen: Record<string, { x: number; y: number; r: number; ok: boolean }> = { left: { x: 0, y: 0, r: 0, ok: false }, center: { x: 0, y: 0, r: 0, ok: false }, right: { x: 0, y: 0, r: 0, ok: false } }
+export interface MirrorOnScreen {
+  x: number; y: number; r: number; ok: boolean
+  /** the mirror with its housing as it shows on screen (px): the on-screen controls keep clear of it */
+  box: { x0: number; y0: number; x1: number; y1: number }
+}
+const ms = (): MirrorOnScreen => ({ x: 0, y: 0, r: 0, ok: false, box: { x0: 0, y0: 0, x1: 0, y1: 0 } })
+export const mirrorScreen: Record<string, MirrorOnScreen> = { left: ms(), center: ms(), right: ms() }
 
 export interface LookTarget {
   yaw: number

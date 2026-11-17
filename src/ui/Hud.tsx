@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { gasTapFn, recentreView, setMotionLook } from '../game/input'
+import { gasTapFn, recentreView, setMotionLook, setTiltSteer, steerTap } from '../game/input'
 import { MODES, type Mode } from '../game/nav'
 import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal } from '../game/sim'
 import type { RbDiag, RbPath } from '../game/store'
 import { HW_TOTAL } from '../highway/traffic'
-import { VIEW0, type ViewOffset, setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
+import { VIEW0, type ViewOffset, setSteerMode, setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
 import { MapOverlay } from './MapOverlay'
-import { EyeControl } from './TouchPad'
+import { EyeControl, SteerWheel, useMirrorGuard } from './TouchPad'
 import { useViewport } from './useViewport'
 
 const Key = ({ children }: { children: ReactNode }) => <kbd>{children}</kbd>
@@ -17,7 +17,7 @@ const TRAFFIC_LABELS = ['Very light', 'Light', 'Normal', 'Busy', 'Very busy']
 function InfoTip({ id, open, onToggle }: { id: string; open: boolean; onToggle: (v: string | null) => void }) {
   return <button type="button" className={`infotip${open ? ' on' : ''}`} aria-label={`About ${id}`} aria-expanded={open} onClick={() => onToggle(open ? null : id)}>i</button>
 }
-const SETTING_INFO: Record<string, string> = {"Speed units": "Shows speeds and limits in miles per hour or kilometres per hour. The rules are the same either way: the limits on the signs and on the centre screen change with this. (Keyboard: U)", "Phone motion": "On: move the phone to look around, like looking through a window: turn it left or right to turn your head, tilt it up for the rear-view mirror. The eye icon still works as well and adds to it. Press the car's centre screen to make wherever the phone points 'straight ahead' again. Turning well to one side counts as a blind-spot check.", "Phone motion sensitivity": "How far your view turns for a given movement of the phone. 1 needs a big movement, 5 only a small one. 3 is the standard. Only used when Phone motion is on.", "Steering sensitivity": "How quickly the steering wheel turns while you hold left or right. Lower is gentler and easier to keep straight; higher turns sharply for tight corners. The wheel returns to straight when you let go.", "Graphics": "How much drawing work each frame does. High: best look (sharpest picture and mirrors, all screen effects, see furthest). Medium: balanced (a little softer, lighter effects, the rear-view mirror refreshes every other frame). Low: smoothest (plain picture, mirrors refresh every other frame, shorter view). Roads, signs, signals, traffic and the rules are the same at every level. The game also lowers the sharpness by itself for a moment if the frame rate drops.", "Mirror detail": "Full: the mirrors show everything, as far back as you can see ahead, at full sharpness. Light: the mirrors only draw about 200 m behind you, skip small road-wear details and are slightly softer; cars, lane markings, signs and lights are still shown. Use Light if the game stutters: it is the setting that gives the most smoothness back.", "Traffic": "How many other cars there are. The same level means different amounts in different places, as in real life: quiet residential streets, busier city roads, and the most on the highway. On the Mixed course it changes as you drive from one district to another. (Keyboard: 1 to 5)"}
+const SETTING_INFO: Record<string, string> = {"Steering": "How you steer on a phone or tablet. Wheel: a small steering wheel at the bottom left; put a finger on it and turn it round, and the car steers as far as you turn it (let go and it returns to straight). Arrows: hold ◀ ▶ to keep turning the wheel. Tilt phone: hold the phone like a steering wheel and turn it; the way you hold it when you start counts as straight (press the centre screen to make the way you hold it now straight). Tilt phone uses the phone's movement, so Phone motion (looking around by moving the phone) is switched off while it is on.", "Speed units": "Shows speeds and limits in miles per hour or kilometres per hour. The rules are the same either way: the limits on the signs and on the centre screen change with this. (Keyboard: U)", "Phone motion": "On: move the phone to look around, like looking through a window: turn it left or right to turn your head, tilt it up for the rear-view mirror. The eye icon still works as well and adds to it. Press the car's centre screen to make wherever the phone points 'straight ahead' again. Turning well to one side counts as a blind-spot check.", "Phone motion sensitivity": "How far your view turns for a given movement of the phone. 1 needs a big movement, 5 only a small one. 3 is the standard. Only used when Phone motion is on.", "Steering sensitivity": "How quickly the steering wheel turns while you hold left or right. Lower is gentler and easier to keep straight; higher turns sharply for tight corners. The wheel returns to straight when you let go.", "Graphics": "How much drawing work each frame does. High: best look (sharpest picture and mirrors, all screen effects, see furthest). Medium: balanced (a little softer, lighter effects, the rear-view mirror refreshes every other frame). Low: smoothest (plain picture, mirrors refresh every other frame, shorter view). Roads, signs, signals, traffic and the rules are the same at every level. The game also lowers the sharpness by itself for a moment if the frame rate drops.", "Mirror detail": "Full: the mirrors show everything, as far back as you can see ahead, at full sharpness. Light: the mirrors only draw about 200 m behind you, skip small road-wear details and are slightly softer; cars, lane markings, signs and lights are still shown. Use Light if the game stutters: it is the setting that gives the most smoothness back.", "Traffic": "How many other cars there are. The same level means different amounts in different places, as in real life: quiet residential streets, busier city roads, and the most on the highway. On the Mixed course it changes as you drive from one district to another. (Keyboard: 1 to 5)"}
 
 function Settings() {
   const [info, setInfo] = useState<string | null>(null)
@@ -25,6 +25,8 @@ function Settings() {
   const units = useGame((s) => s.units)
   const steerSens = useGame((s) => s.steerSens)
   const lookMode = useGame((s) => s.lookMode)
+  const steerMode = useGame((s) => s.steerMode)
+  const [tiltErr, setTiltErr] = useState(false)
   const motionSens = useGame((s) => s.motionSens)
   const graphics = useGame((s) => s.graphics)
   const mirrorLite = useGame((s) => s.mirrorLite)
@@ -50,12 +52,26 @@ function Settings() {
       {touch && (
         <div className="setting">
           <div className="setting-head">
+            <span className="setlabel">Steering<InfoTip id="Steering" open={info === 'Steering'} onToggle={setInfo} /></span>
+            <span className="muted">{tiltErr ? 'Tilt needs the motion sensor: allow it, or pick Wheel / Arrows' : steerMode === 'wheel' ? 'Turn the small wheel with a finger' : steerMode === 'arrows' ? 'Hold ◀ ▶' : 'Turn the phone like a wheel'}</span>
+          </div>
+          <div className="seg" role="group" aria-label="Steering">
+            <button className={steerMode === 'wheel' ? 'on' : ''} onClick={() => { setTiltErr(false); setSteerMode('wheel') }}>Wheel</button>
+            <button className={steerMode === 'arrows' ? 'on' : ''} onClick={() => { setTiltErr(false); setSteerMode('arrows') }}>Arrows</button>
+            {/* (asked for here, inside the tap: iPhones only allow the motion sensor from a tap) */}
+            <button className={steerMode === 'tilt' ? 'on' : ''} onClick={async () => { const ok = await setTiltSteer(true); setTiltErr(!ok); if (ok) setSteerMode('tilt') }}>Tilt phone</button>
+          </div>
+        </div>
+      )}
+      {touch && (
+        <div className="setting">
+          <div className="setting-head">
             <span className="setlabel">Phone motion<InfoTip id="Phone motion" open={info === 'Phone motion'} onToggle={setInfo} /></span>
-            <span className="muted">{lookMode === 'motion' ? 'Move the phone to look (the eye icon works too)' : 'Off: look with the eye icon'}</span>
+            <span className="muted">{steerMode === 'tilt' ? 'Off while you steer by tilting the phone' : lookMode === 'motion' ? 'Move the phone to look (the eye icon works too)' : 'Off: look with the eye icon'}</span>
           </div>
           <div className="seg" role="group" aria-label="Phone motion">
             <button className={lookMode === 'eye' ? 'on' : ''} onClick={() => setLookMode('eye')}>Off</button>
-            <button className={lookMode === 'motion' ? 'on' : ''} onClick={async () => { if (await setMotionLook(true)) setLookMode('motion') }}>On</button>
+            <button className={lookMode === 'motion' ? 'on' : ''} disabled={steerMode === 'tilt'} onClick={async () => { if (await setMotionLook(true)) setLookMode('motion') }}>On</button>
           </div>
         </div>
       )}
@@ -162,6 +178,11 @@ function HoldButton({ label, onDown, onUp, className = '', active = false, child
  * On-screen controls for phones and tablets. Bottom left, stacked: the eye (slide to look around), the indicators. Steer with the car's own steering wheel.
  * Right: lane assist in the middle of the edge; brake and gas at the bottom.
  */
+const Chev = ({ dir }: { dir: -1 | 1 }) => (
+  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" style={{ transform: dir === 1 ? 'scaleX(-1)' : undefined }}>
+    <path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
 const TurnArrow = ({ dir }: { dir: -1 | 1 }) => (
   <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style={{ transform: dir === 1 ? 'scaleX(-1)' : undefined }}>
     <path d="M10 5 3 12l7 7V15h11V9H10z" fill="currentColor" />
@@ -171,28 +192,48 @@ function TouchControls() {
   const signal = useGame((s) => s.hud.signal)
   const assist = useGame((s) => s.hud.assist)
   const lookMode = useGame((s) => s.lookMode)
+  const steerMode = useGame((s) => s.steerMode)
   useEffect(() => {
-    if (lookMode === 'motion') void setMotionLook(true)
+    if (lookMode === 'motion' && steerMode !== 'tilt') void setMotionLook(true)
     return () => { void setMotionLook(false) }
-  }, [lookMode])
+  }, [lookMode, steerMode])
+  useEffect(() => {
+    if (steerMode !== 'tilt') return
+    // tilt steering: an iPhone only lets the motion sensor start from a tap, so if it cannot start yet, the next tap starts it
+    let live = true
+    const retry = () => { if (live) void setTiltSteer(true) }
+    void setTiltSteer(true).then((ok) => { if (live && !ok) window.addEventListener('pointerdown', retry, { once: true }) })
+    return () => { live = false; window.removeEventListener('pointerdown', retry); void setTiltSteer(false) }
+  }, [steerMode])
+  // keep every control clear of the mirrors (they move with your view and seat settings)
+  const left = useRef<HTMLDivElement>(null), right = useRef<HTMLDivElement>(null), lane = useRef<HTMLButtonElement>(null)
+  useMirrorGuard(left, right, lane)
   const hold = (key: 'up' | 'down') => ({ onDown: () => { input[key] = true }, onUp: () => { input[key] = false } })
   return (
     <div className="touch-controls" onContextMenu={(e) => e.preventDefault()}>
-      {/* bottom left, stacked: the eye on top, the indicators under it (steering: the car's own wheel) */}
-      <div className="tleft">
+      {/* LANE: fixed in the middle of the right edge (kept outside the groups, which may be shrunk to clear the mirrors) */}
+      <button ref={lane} className={`tbtn lanekeep lanemid${assist ? ' on' : ''}${assist === 2 ? ' active' : ''}`} aria-pressed={assist > 0} aria-label="Lane assist (tap to switch on or off; also returns the view to your default)" onPointerDown={() => { input.laneToggle = true; recentreView() }}><span className="ring" /><small>LANE</small></button>
+      {/* bottom left, stacked: the eye on top, the indicators under it, the steering (wheel or arrows; none when tilting the phone) at the bottom */}
+      <div className="tleft" ref={left}>
         <EyeControl />
         <div className="pod sigpod">
           <HoldButton label="Left indicator" className={`sig${signal === -1 ? ' blink' : ''}`} active={signal === -1} onDown={() => toggleSignal(-1)} onUp={() => {}}><TurnArrow dir={-1} /></HoldButton>
           <HoldButton label="Right indicator" className={`sig${signal === 1 ? ' blink' : ''}`} active={signal === 1} onDown={() => toggleSignal(1)} onUp={() => {}}><TurnArrow dir={1} /></HoldButton>
         </div>
+        {steerMode === 'wheel' && <SteerWheel />}
+        {steerMode === 'arrows' && (
+          <div className="pod steerpod">
+            <HoldButton label="Steer left" className="steer" onDown={() => { input.left = true; steerTap(-1) }} onUp={() => { input.left = false }}><Chev dir={-1} /></HoldButton>
+            <HoldButton label="Steer right" className="steer" onDown={() => { input.right = true; steerTap(1) }} onUp={() => { input.right = false }}><Chev dir={1} /></HoldButton>
+          </div>
+        )}
       </div>
 
       <div className="tgroup center" />
 
-      <div className="tgroup">
+      <div className="tgroup" ref={right}>
         <HoldButton label="Brake" className="pedal brake" {...hold('down')}>Brake</HoldButton>
         <div className="gascol">
-          <button className={`tbtn lanekeep lanemid${assist ? ' on' : ''}${assist === 2 ? ' active' : ''}`} aria-pressed={assist > 0} aria-label="Lane assist (tap to switch on or off; also returns the view to your default)" onPointerDown={() => { input.laneToggle = true; recentreView() }}><span className="ring" /><small>LANE</small></button>
           <HoldButton label="Accelerator" className="pedal gas" onDown={() => { input.up = true; gasTapFn() }} onUp={() => { input.up = false }}>Gas</HoldButton>
         </div>
       </div>
@@ -284,7 +325,7 @@ function TouchHelp() {
   return (
     <ul className="controls">
       <li><span><b>Gas / Brake</b></span> Pedals at the bottom right. Hold gas to speed up, let go to slow down. The brake gets stronger the longer you hold it: tap for a gentle stop</li>
-      <li><span><b>Steer</b></span> Put a finger on the car's steering wheel and turn it round, like a real wheel: the car steers as far as you turn it. Let go and it returns to straight (grab it again quickly to go hand over hand). Two quick little nudges the same way change lane. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
+      <li><span><b>Steer</b></span> Pick how in Settings → Steering. Wheel (bottom left): put a finger on it and turn it round; the car steers as far as you turn it, and it returns to straight when you let go. Arrows: hold ◀ ▶. Tilt phone: turn the phone like a steering wheel (press the centre screen to make the way you hold it now count as straight). With the wheel or arrows, two quick little nudges / taps the same way change lane. LANE (above Gas): tap to switch lane assist on (the car keeps to the middle of its lane; "LANE ASSIST" glows on the dashboard), tap again to switch it off. Either tap also returns the view to your default</li>
       <li><span><b>Eye</b></span> Bottom left: put a thumb on it and slide left or right to turn your head (all the way for the blind spot, up for the rear-view mirror). With Phone motion on in Settings you can also move the phone; press the centre screen to recentre</li>
       <li><span><b>⬅ ➡</b></span> Under the eye: left and right indicator. Tap to switch on, tap again to switch off; it also goes off when you steer the other way</li>
     </ul>
