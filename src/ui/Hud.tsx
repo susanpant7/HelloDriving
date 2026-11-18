@@ -571,6 +571,55 @@ function AheadPanel() {
   )
 }
 
+/** Paused: what you can do (resume, restart, mirrors, view, change practice), and the settings behind the gear icon */
+function PausePanel() {
+  const [settings, setSettings] = useState(false)
+  const mode = useGame((s) => s.mode)
+  const errors = useGame((s) => s.hud.errors)
+  const { touch } = useViewport()
+  if (settings) {
+    return (
+      <div className="overlay menu">
+        <div className="panel wide page">
+          <header className="pagehead">
+            <button type="button" className="iconbtn" aria-label="Back" onClick={() => setSettings(false)}>
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+            <h2>Settings</h2>
+          </header>
+          <Settings />
+          <section className="setgroup">
+            <h3>Controls</h3>
+            {touch ? <TouchHelp /> : <ControlsList />}
+          </section>
+          <div className="pagefoot"><button type="button" className="primary" onClick={() => setSettings(false)}>Done</button></div>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="overlay">
+      <div className="panel pausepanel">
+        <button type="button" className="iconbtn gear pausegear" aria-label="Settings" title="Settings" onClick={() => setSettings(true)}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+          </svg>
+        </button>
+        <h2>Paused</h2>
+        <p className="sub">{modeTitle(mode)} · {errors} {errors === 1 ? 'mistake' : 'mistakes'} so far</p>
+        <div className="actions">
+          <button className="primary" onClick={resumeGame}>Resume <Key>Esc</Key></button>
+          <button className="secondary" onClick={() => startGame()}>Restart <Key>R</Key></button>
+          <button className="secondary" onClick={() => useGame.setState({ adjusting: true })}>Adjust mirrors</button>
+          <button className="secondary" onClick={() => { adjustMirror(null); useGame.setState({ viewAdjusting: true }) }}>Set default view</button>
+          <button className="secondary" onClick={goMenu}>Change practice</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PlayingHud() {
   const hud = useGame((s) => s.hud)
   const messages = useGame((s) => s.messages)
@@ -630,8 +679,6 @@ export function Hud() {
   const report = useGame((s) => s.report)
   const reportPts = useGame((s) => s.reportPoints)
   const start = startGame
-  const mode = useGame((s) => s.mode)
-  const hud = useGame((s) => s.hud)
   const adjusting = useGame((s) => s.adjusting)
   const viewAdjusting = useGame((s) => s.viewAdjusting)
   const [adjSel, setAdjSel] = useState<'left' | 'center' | 'right' | null>(null)
@@ -687,22 +734,7 @@ export function Hud() {
 
       {status === 'paused' && pauseReason === 'user' && viewAdjusting && <ViewAdjust />}
 
-      {status === 'paused' && pauseReason === 'user' && !adjusting && !viewAdjusting && (
-        <div className="overlay">
-          <div className="panel">
-            <h2>Paused</h2>
-            <p className="sub">{modeTitle(mode)} · {hud.errors} {hud.errors === 1 ? 'mistake' : 'mistakes'} so far</p>
-            <Settings />
-            <div className="actions">
-              <button className="primary" onClick={resumeGame}>Resume <Key>Esc</Key></button>
-              <button className="secondary" onClick={start}>Restart <Key>R</Key></button>
-              <button className="secondary" onClick={() => useGame.setState({ adjusting: true })}>Adjust mirrors</button>
-              <button className="secondary" onClick={() => { adjustMirror(null); useGame.setState({ viewAdjusting: true }) }}>Set default view</button>
-              <button className="secondary" onClick={goMenu}>Change practice</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {status === 'paused' && pauseReason === 'user' && !adjusting && !viewAdjusting && <PausePanel />}
 
       {status === 'crashed' && (
         <div className="overlay danger">

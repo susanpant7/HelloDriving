@@ -633,3 +633,7 @@ button.primary:disabled { opacity: .5; cursor: not-allowed; filter: grayscale(.4
 .pp-dir .linkbtn { background: none; border: 0; padding: 0; color: #8ab8ff; font: inherit; text-decoration: underline; cursor: pointer; }
 .pp-place { color: #bcd6ff; }
 .pp-place .linkbtn { background: none; border: 0; padding: 0; color: #8ab8ff; font: inherit; text-decoration: underline; cursor: pointer; }
+
+/* the pause panel: the settings are behind the gear in its corner */
+.pausepanel { position: relative; }
+.pausegear { position: absolute; top: 14px; right: 14px; }
