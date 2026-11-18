@@ -45,6 +45,13 @@ export interface Edge {
   lanesTagged: boolean
   /** part of a roundabout's ring */
   ring: boolean
+  /** a short piece of road inside a larger intersection (between the junctions where a divided road crosses another): no paint,
+   *  kerbs or stop lines of its own, and nobody stops at its end */
+  internal: boolean
+  /** what each lane is for at the junction ahead (from the map's turn:lanes; left to right, e.g. ['left'], ['through', 'right']),
+   *  for travel a -> b (F) and b -> a (B); null where the map does not say */
+  turnF: string[][] | null
+  turnB: string[][] | null
   /** cumulative length at each point, and the total */
   cum: number[]
   len: number
@@ -62,6 +69,8 @@ export interface Junction {
   r: number
   /** a cul-de-sac's turning circle (radius, m), or 0 */
   bulb: number
+  /** the larger intersection it is part of (an index into RealMap.clusters), or -1 */
+  cluster: number
   /** the widest road's half width here (the round patch drawn at a bend or a dead end) */
   r0: number
   /** how each arriving road is controlled, by edge index (only roads that can arrive here) */
@@ -81,6 +90,8 @@ export interface RealMap {
   kx: number
   kz: number
   junctions: Junction[]
+  /** larger intersections made of several junctions (a divided road crossing another), each listed by its junctions */
+  clusters: Junction[][]
   edges: Edge[]
   /** building outlines (x / z pairs) and heights (m) */
   buildings: Array<{ pts: number[]; h: number }>
@@ -184,7 +195,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       const o = nodes.get(n)!
       k = junctions.length
       jIndex.set(n, k)
-      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map() })
+      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map(), cluster: -1 })
     }
     return k
   }
@@ -211,10 +222,16 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       else { lf = lb = defaultLanes(cls, false); centre = defaultCentre(cls) ? 1 : 0 }
       if (t['lanes:both_ways']) centre = 1
     }
+    // what each lane is for (left to right in the direction of travel): the lane count follows it where the map gives no count
+    const turns = (v: string | undefined) => (v ? v.split('|').map((l) => l.split(';').map((x) => x.trim()).filter((x) => x && x !== 'none')) : null)
+    const tF = turns(oneway ? t['turn:lanes'] ?? t['turn:lanes:forward'] : t['turn:lanes:forward'])
+    const tB = oneway ? null : turns(t['turn:lanes:backward'])
+    if (tF && !lanes && !t['lanes:forward']) lf = tF.length
+    if (tB && !lanes && !t['lanes:backward']) lb = tB.length
     lf = Math.min(lf, 6); lb = Math.min(lb, 6)
     const lw = laneWidth(cls, Math.max(lf, lb))
     const tagged = parseLimit(t.maxspeed)
-    const base = { ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
+    const base = { internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
     let start = 0
     for (let i = 1; i < list.length; i++) {
       if (i < list.length - 1 && (uses.get(list[i]) ?? 0) < 2) continue // (not a junction: the road carries on)
@@ -248,6 +265,31 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     j.r0 = r
     j.r = j.ends.length >= 3 ? r + 0.5 : j.ends.length === 2 ? 0 : r
   }
+
+  // ---- larger intersections: where a divided road crosses another road, the map has a junction for each carriageway it crosses,
+  // a few metres apart, joined by short pieces of road. Those pieces are inside the intersection. They are found as short edges
+  // joining two junctions where the same roads meet, with a divided (one-way) road among them. ----
+  const names = junctions.map((j) => [...new Set(j.ends.map(({ e }) => edges[e].name || `#${e}`))].sort().join('|'))
+  const cParent = junctions.map((_, i) => i)
+  const cFind = (i: number): number => (cParent[i] === i ? i : (cParent[i] = cFind(cParent[i])))
+  const dividedAt = (j: Junction, not: Edge) => j.ends.some(({ e }) => edges[e] !== not && edges[e].oneway && !isLink(edges[e].cls))
+  for (const e of edges) {
+    const A = junctions[e.a], B = junctions[e.b]
+    if (e.a === e.b || e.len > 40 || A.ends.length < 3 || B.ends.length < 3) continue
+    if (names[e.a] !== names[e.b] || !names[e.a].includes('|')) continue
+    if (!dividedAt(A, e) && !dividedAt(B, e)) continue
+    e.internal = true
+    cParent[cFind(e.a)] = cFind(e.b)
+  }
+  const clusters: Junction[][] = []
+  const cIndex = new Map<number, number>()
+  junctions.forEach((j, i) => {
+    if (!j.ends.some(({ e }) => edges[e].internal)) return
+    const r = cFind(i)
+    if (!cIndex.has(r)) { cIndex.set(r, clusters.length); clusters.push([]) }
+    j.cluster = cIndex.get(r)!
+    clusters[j.cluster].push(j)
+  })
 
   // ---- what the map records: traffic lights, stop / give-way signs, turning circles ----
 
@@ -364,6 +406,21 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
   // every road arriving at it has a STOP sign: an all-way stop
   for (const j of touched) j.allWay = [...j.ctl.values()].every((c) => c === 'stop')
 
+  // inside a larger intersection nobody stops again: you stop (or get the light) where you enter it, then drive through
+  for (const cl of clusters) {
+    // (the whole intersection has lights if any of its junctions has)
+    const lit = cl.some((j) => [...j.ctl.values()].includes('signal'))
+    for (const j of cl) {
+      for (const { e, atA } of j.ends) {
+        if (!arrives(edges[e], atA)) continue
+        if (edges[e].internal) j.ctl.set(e, 'none')
+        else if (lit && j.ctl.get(e) !== 'signal' && j.src.get(e) !== 'map') { j.ctl.set(e, 'signal'); if (!j.src.has(e)) j.src.set(e, 'guess') }
+      }
+      const outer = j.ends.filter(({ e, atA }) => arrives(edges[e], atA) && !edges[e].internal)
+      j.allWay = !lit && outer.length > 0 && outer.every(({ e }) => j.ctl.get(e) === 'stop') && cl.every((k) => k.ends.filter(({ e, atA }) => arrives(edges[e], atA) && !edges[e].internal).every(({ e }) => k.ctl.get(e) === 'stop'))
+    }
+  }
+
   // ---- buildings ----
   const buildings: RealMap['buildings'] = []
   for (const w of bWays) {
@@ -430,7 +487,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
   }
   const f = focus ? { x: X(focus.lon), z: Z(focus.lat) } : { x: 0, z: 0 }
   return {
-    lat0, lon0, kx, kz, junctions, edges, buildings, focus: f, grid,
+    lat0, lon0, kx, kz, junctions, clusters, edges, buildings, focus: f, grid,
     stats: { roads: edges.length, km: km / 1000, lanesTagged: km ? lanesTaggedLen / km : 0, limitsTagged: km ? limitsTaggedLen / km : 0, limitsPhoto: km ? limitsPhotoLen / km : 0, stopsFromMap, stopsFromPhotos, stopsGuessed, signals, signalsFromMap, signalsFromPhotos },
   }
 }
@@ -539,6 +596,7 @@ export function onRealRoad(m: RealMap, x: number, z: number, slack = 1.2): boole
     if (j.bulb && d <= j.bulb + slack) return true
     if (j.ends.length < 3) { if (j.ends.length && d <= j.r0 + slack) return true; continue }
     if (d <= j.r + slack) return true
+    if (j.cluster >= 0 && d < 60 && inRing(clusterHull(m, j.cluster), x, z)) return true
     if (d > j.r + FILLET + 4 + slack) continue
     // inside the outline, allowing `slack` (the point is moved that much towards the centre)
     const k = d > slack ? (d - slack) / d : 0
@@ -698,4 +756,36 @@ export function roadAt(m: RealMap, x: number, z: number): Near | null {
 /** metres (x east, z south) -> degrees */
 export function toLatLon(m: { lat0: number; lon0: number; kx: number; kz: number }, x: number, z: number) {
   return { lat: m.lat0 - z / m.kz, lon: m.lon0 + x / m.kx }
+}
+
+const hulls = new WeakMap<Junction[], Array<[number, number]>>()
+/**
+ * The surface of a larger intersection: the outline round all its junctions (with their rounded corners) and the pieces of road
+ * between them, so the middle of a divided-road crossing is one stretch of road, as it is in reality.
+ */
+export function clusterHull(m: RealMap, ci: number): Array<[number, number]> {
+  const cl = m.clusters[ci]
+  const got = hulls.get(cl)
+  if (got) return got
+  const pts: Array<[number, number]> = []
+  for (const j of cl) {
+    pts.push(...junctionRing(m, j))
+    for (const { e } of j.ends) {
+      const ed = m.edges[e]
+      if (!ed.internal) continue
+      for (const s of [0, ed.len]) {
+        const [px, pz, dx, dz] = pointAt(ed, s)
+        pts.push([px - dz * halfWidth(ed, 1), pz + dx * halfWidth(ed, 1)], [px + dz * halfWidth(ed, -1), pz - dx * halfWidth(ed, -1)])
+      }
+    }
+  }
+  // convex hull (monotone chain)
+  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+  const lower: Array<[number, number]> = [], upper: Array<[number, number]> = []
+  for (const p of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p) }
+  for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p) }
+  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)]
+  hulls.set(cl, hull)
+  return hull
 }

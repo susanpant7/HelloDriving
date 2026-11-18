@@ -81,6 +81,21 @@ function bez(p: number[], t: number) {
 }
 
 /* ---------------- choosing the way ---------------- */
+/**
+ * The lane to be in for a turn (-1 left, 0 straight on, 1 right, 2 turning round): where the map says what each lane is for, the
+ * nearest lane that allows it; otherwise the leftmost lane to turn left, the rightmost to turn right, and any lane to go straight.
+ */
+function laneFor(e: Edge, dir: 1 | -1, turn: number, now: number): number {
+  const n = laneOffsets(e, dir).length
+  const turns = dir === 1 ? e.turnF : e.turnB
+  if (turns && turns.length === n) {
+    const ok = (t: string[]) => (turn === 0 ? t.includes('through') || !t.length : turn === 1 ? t.some((x) => x.includes('right')) : t.some((x) => x.includes('left') || x === 'reverse'))
+    let best = -1
+    turns.forEach((t, k) => { if (ok(t) && (best < 0 || Math.abs(k - now) < Math.abs(best - now))) best = k })
+    if (best >= 0) return best
+  }
+  return turn === 1 ? n - 1 : turn === -1 || turn === 2 ? 0 : Math.min(n - 1, now)
+}
 function choose(m: RealMap, c: RC): RC['next'] {
   const e = m.edges[c.e]
   const j = endJ(m, e, c.dir)
@@ -266,8 +281,7 @@ export function stepRealTraffic(dt: number, t: number, p: Player) {
         if (!c.next) { c.on = false; continue }
       }
       // get into the lane for the turn, and show the indicator
-      const tl = c.next && toLine < 80 ? c.next.turn === 1 ? laneOffsets(e, c.dir).length - 1 : c.next.turn === -1 ? 0 : c.lane : c.lane
-      c.lane = tl
+      if (c.next && toLine < 80) c.lane = laneFor(e, c.dir, c.next.turn, c.lane)
       const latWant = laneOff(e, c.dir, c.lane)
       c.lat += Math.max(-1.2 * dt, Math.min(1.2 * dt, latWant - c.lat))
       cars[i].sig = c.next && toLine < 60 ? (c.next.turn === 1 ? 1 : c.next.turn === -1 || c.next.turn === 2 ? -1 : 0) : 0

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { FILLET, endDir, halfWidth, junctionRing, onRealRoad, pointAt, type Edge, type Junction, type RealMap } from './roads'
+import { FILLET, arrives, clusterHull, endDir, halfWidth, junctionRing, laneOffsets, onRealRoad, pointAt, type Edge, type Junction, type RealMap } from './roads'
 
 /**
  * A real place, drawn from its map data: the road surface (with rounded kerb corners and cul-de-sac bulbs), kerbs and sidewalks,
@@ -99,8 +99,31 @@ function trims(m: RealMap, e: Edge) {
 const sidewalked = (e: Edge) => e.cls === 'residential' || e.cls === 'unclassified' || e.cls === 'living_street' || e.cls === 'tertiary' || e.cls === 'secondary' || e.cls === 'primary'
 const isMainRoad = (e: Edge) => e.cls === 'tertiary' || e.cls === 'secondary' || e.cls === 'primary' || e.cls === 'trunk' || e.cls === 'motorway' || e.cls.endsWith('_link')
 
+/** lane arrows, in the lane's travel frame (u forward 0..3.9 m, v to the travel-right), as on US roads */
+const ARROW_SHAPES: Record<'L' | 'S' | 'R' | 'SR' | 'SL', P2[][]> = (() => {
+  const straight: P2[][] = [[[0, -0.15], [2.6, -0.15], [2.6, 0.15], [0, 0.15]], [[2.5, -0.62], [2.5, 0.62], [3.9, 0]]]
+  const turn = (d: 1 | -1): P2[][] => [
+    [[0, -0.15], [1.9, -0.15], [1.9, 0.15], [0, 0.15]],
+    [[1.7, 0], [2.1, 0], [2.1, 1.35 * d], [1.7, 1.35 * d]],
+    [[1.35, 1.3 * d], [2.45, 1.3 * d], [1.9, 2.2 * d]],
+  ]
+  const sr: P2[][] = [...straight, [[1.45, 0], [1.8, 0], [1.8, 1.1], [1.45, 1.1]], [[1.1, 1.05], [2.15, 1.05], [1.62, 1.8]]]
+  const sl: P2[][] = sr.map((poly) => poly.map(([u, v]) => [u, -v] as P2))
+  return { S: straight, L: turn(-1), R: turn(1), SR: sr, SL: sl }
+})()
+/** which arrow a lane gets from what the map says it is for */
+function arrowFor(t: string[]): keyof typeof ARROW_SHAPES | null {
+  const l = t.some((x) => x.includes('left')), r = t.some((x) => x.includes('right')), s = t.includes('through')
+  if (s && l) return 'SL'
+  if (s && r) return 'SR'
+  if (l) return 'L'
+  if (r) return 'R'
+  if (s) return 'S'
+  return null
+}
+
 /** where each sign goes (and which picture), worked out once per area */
-export interface SignDef { x: number; z: number; face: P2; kind: 'stop' | 'allway' | number; /** the way away from the road (to move it clear) */ out?: P2 }
+export interface SignDef { x: number; z: number; face: P2; kind: 'stop' | 'allway' | 'yield' | 'noentry' | number; /** the way away from the road (to move it clear) */ out?: P2 }
 
 /** a tile's box (m): what lies in it is built with it */
 export interface Box { x0: number; x1: number; z0: number; z1: number }
@@ -163,6 +186,8 @@ export function buildRoads(m: RealMap, box?: Box) {
     const lo = Math.max(s0, a), hi = Math.min(s1, b)
     const seg = () => sub(e, lo, hi)
 
+    // (a piece of road inside a larger intersection: just the road surface; the intersection has no paint or kerbs in its middle)
+    if (e.internal) return
     // ---- kerbs and sidewalks (a grass strip between the kerb and the sidewalk) ----
     if (sidewalked(e) && s1 - s0 > 4 && hi > lo) {
       const divided = e.oneway && !e.cls.endsWith('_link')
@@ -210,8 +235,49 @@ export function buildRoads(m: RealMap, box?: Box) {
       }
     }
 
+    // ---- lane arrows (where the map says what each lane is for): two in each lane before the junction ----
+    for (const dir of [1, -1] as const) {
+      const turns = dir === 1 ? e.turnF : e.turnB
+      if (!turns) continue
+      const j = m.junctions[dir === 1 ? e.b : e.a]
+      if (j.ends.length < 3) continue
+      const offs = laneOffsets(e, dir)
+      const line = j.r + 1.2 // (the stop line, from the junction centre)
+      for (const back of [7, 32]) {
+        const dEnd = line + back // distance of the arrow's tip from the edge's end
+        const sTip = dir === 1 ? e.len - dEnd : dEnd
+        if (sTip < 3 || sTip > e.len - 3 || sTip < a || sTip >= b) continue
+        turns.forEach((t, k) => {
+          const shape = arrowFor(t)
+          if (!shape || offs[k] === undefined) return
+          const [px, pz, dx, dz] = pointAt(e, sTip)
+          const fx = dx * dir, fz = dz * dir, rx = -fz, rz = fx // travel forward, travel right
+          const cx = px - dz * offs[k], cz = pz + dx * offs[k]
+          // (the shapes run 0..3.9 m forward: placed so the tip is at sTip, scaled up a little for a wide lane)
+          const k2 = 1.25
+          for (const poly of ARROW_SHAPES[shape]) {
+            const pts = poly.map(([u, v]) => [cx + fx * (u * k2 - 3.9 * k2) + rx * v * k2, cz + fz * (u * k2 - 3.9 * k2) + rz * v * k2] as P2)
+            for (let q = 1; q + 1 < pts.length; q++) marks.tri([pts[0][0], Y_MARK, pts[0][1]], [pts[q + 1][0], Y_MARK, pts[q + 1][1]], [pts[q][0], Y_MARK, pts[q][1]], WHITE)
+          }
+        })
+      }
+    }
+
+    // ---- DO NOT ENTER: where a one-way road ends at a junction, facing anyone who would turn into it the wrong way ----
+    if (e.oneway && !e.ring && !e.cls.startsWith('motorway')) { // (not round a roundabout, where every piece is one-way)
+      const j = m.junctions[e.b]
+      const sAt = Math.max(0, e.len - (j.r + 3))
+      if (j.ends.length >= 3 && e.len > 12 && sAt >= a && sAt < b) {
+        const [px, pz, dx, dz] = pointAt(e, sAt)
+        // a driver turning in would travel b -> a (along -d); their right is (dz, -dx)... the sign stands on their right, facing them
+        const tx = -dx, tz = -dz, rx = -tz, rz = tx
+        const off = halfWidth(e, 1) + 1.1
+        signs.push({ x: px + rx * off, z: pz + rz * off, face: [-tx, -tz], kind: 'noentry', out: [rx, rz] })
+      }
+    }
+
     // ---- speed limit signs: near the start of each long enough road, for each way it can be driven ----
-    if (e.len > 130 && e.cls !== 'service') {
+    if (e.len > 130 && e.cls !== 'service' && !e.internal) {
       const mph = Math.round(e.limit / 0.44704 / 5) * 5
       for (const dir of e.oneway ? [1] : [1, -1]) {
         const s = dir === 1 ? s0 + 30 : s1 - 30
@@ -232,10 +298,19 @@ export function buildRoads(m: RealMap, box?: Box) {
     if ((j.ends.length === 1 && !j.bulb) || j.ends.length === 2) disc(road, j.x, j.z, j.r0, Y_ROAD, [1, 1, 1], 16)
     if (j.ends.length < 3) continue
     junctionSurface(road, m, j)
+    // a larger intersection (a divided road crossing another): one surface over the whole of it, drawn with its first junction
+    if (j.cluster >= 0 && m.clusters[j.cluster][0] === j) {
+      const hull = clusterHull(m, j.cluster)
+      let cx = 0, cz = 0
+      for (const [x, z] of hull) { cx += x; cz += z }
+      cx /= hull.length; cz /= hull.length
+      for (let i = 0; i < hull.length; i++) { const p = hull[i], q = hull[(i + 1) % hull.length]; road.tri([cx, Y_ROAD, cz], [p[0], Y_ROAD, p[1]], [q[0], Y_ROAD, q[1]], [1, 1, 1]) }
+    }
     // stop lines and signs for each road that must stop here
     for (const { e: ei, atA } of j.ends) {
       const ctl = j.ctl.get(ei)
-      if (ctl !== 'stop' && ctl !== 'signal') continue
+      if (ctl !== 'stop' && ctl !== 'signal' && ctl !== 'yield') continue
+      if (!arrives(m.edges[ei], atA) || m.edges[ei].internal) continue
       const e = m.edges[ei]
       const d = endDir(e, atA) // pointing away from the junction, along the road
       const dist = j.r + 1.2
@@ -248,6 +323,12 @@ export function buildRoads(m: RealMap, box?: Box) {
       const outer = right - e.shoulder
       const bx = j.x + d[0] * dist, bz = j.z + d[1] * dist
       const P = (o: number, along: number): P2 => [bx + rx * o + d[0] * along, bz + rz * o + d[1] * along]
+      if (ctl === 'yield') {
+        // a give-way line: white triangles across the lane ("shark's teeth"), and a YIELD sign
+        for (let o = inner + 0.3; o + 0.6 < outer; o += 0.9) { const a1 = P(o, 0), a2 = P(o + 0.6, 0), tip = P(o + 0.3, 0.9); marks.tri([a1[0], Y_MARK, a1[1]], [tip[0], Y_MARK, tip[1]], [a2[0], Y_MARK, a2[1]], WHITE) }
+        signs.push({ x: bx + rx * (right + 1.1) + d[0] * 0.8, z: bz + rz * (right + 1.1) + d[1] * 0.8, face: [d[0], d[1]], kind: 'yield', out: [rx, rz] })
+        continue
+      }
       marks.quad(P(inner, 0), P(outer, 0), P(outer, 0.5), P(inner, 0.5), Y_MARK, WHITE)
       if (ctl === 'stop') signs.push({ x: bx + rx * (right + 1.1) + d[0] * 0.8, z: bz + rz * (right + 1.1) + d[1] * 0.8, face: [d[0], d[1]], kind: j.allWay ? 'allway' : 'stop', out: [rx, rz] })
     }
@@ -391,7 +472,9 @@ function buildingTest(m: RealMap) {
 /* ---------------- sign pictures ---------------- */
 /** the speed limits that have a sign picture (mph) */
 export const LIMITS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]
-const COLS = 6, ROWS = 3
+const COLS = 6, ROWS = 4
+/** atlas cells: 0 STOP, 1 ALL-WAY STOP, 2.. speed limits, then YIELD and DO NOT ENTER */
+const CELL_YIELD = 2 + LIMITS.length, CELL_NOENTRY = CELL_YIELD + 1
 /** the sign pictures on one canvas, in a grid: STOP, STOP with the ALL-WAY plaque, and a SPEED LIMIT sign for each limit */
 export function signAtlas() {
   const S = 256
@@ -412,6 +495,23 @@ export function signAtlas() {
   }
   stop(0, false)
   stop(S, true)
+  {
+    // YIELD: a red-edged white triangle, point down
+    const ox = (CELL_YIELD % COLS) * S, oy = Math.floor(CELL_YIELD / COLS) * S
+    const tri = (inset: number) => { g.beginPath(); g.moveTo(ox + S * 0.04 + inset * 1.7, oy + S * 0.1 + inset); g.lineTo(ox + S * 0.96 - inset * 1.7, oy + S * 0.1 + inset); g.lineTo(ox + S / 2, oy + S * 0.92 - inset * 2); g.closePath() }
+    g.fillStyle = '#c4161c'; tri(0); g.fill()
+    g.fillStyle = '#fff'; tri(S * 0.11); g.fill()
+    g.fillStyle = '#c4161c'; g.font = `800 ${S * 0.13}px Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('YIELD', ox + S / 2, oy + S * 0.36)
+  }
+  {
+    // DO NOT ENTER: a red disc with a white bar
+    const ox = (CELL_NOENTRY % COLS) * S, oy = Math.floor(CELL_NOENTRY / COLS) * S, cx = ox + S / 2, cy = oy + S / 2
+    g.fillStyle = '#fff'; g.beginPath(); g.arc(cx, cy, S * 0.47, 0, Math.PI * 2); g.fill()
+    g.fillStyle = '#c4161c'; g.beginPath(); g.arc(cx, cy, S * 0.44, 0, Math.PI * 2); g.fill()
+    g.fillStyle = '#fff'; g.fillRect(cx - S * 0.33, cy - S * 0.065, S * 0.66, S * 0.13)
+    g.font = `800 ${S * 0.085}px Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'
+    g.fillText('DO NOT', cx, cy - S * 0.2); g.fillText('ENTER', cx, cy + S * 0.2)
+  }
   LIMITS.forEach((mph, i) => {
     const c = i + 2, ox = (c % COLS) * S, oy = Math.floor(c / COLS) * S, w = S * 0.78, x0 = ox + (S - w) / 2
     g.fillStyle = '#111'; g.fillRect(x0, oy, w, S)
@@ -430,8 +530,8 @@ export function signMesh(defs: SignDef[]) {
   const pos: number[] = [], uv: number[] = [], nor: number[] = []
   for (const s of defs) {
     const li = typeof s.kind === 'number' ? LIMITS.indexOf(Math.max(5, Math.min(80, s.kind))) : -1
-    const cell = s.kind === 'stop' ? 0 : s.kind === 'allway' ? 1 : 2 + Math.max(0, li)
-    const isStop = s.kind === 'stop' || s.kind === 'allway'
+    const cell = s.kind === 'stop' ? 0 : s.kind === 'allway' ? 1 : s.kind === 'yield' ? CELL_YIELD : s.kind === 'noentry' ? CELL_NOENTRY : 2 + Math.max(0, li)
+    const isStop = s.kind === 'stop' || s.kind === 'allway' || s.kind === 'yield' || s.kind === 'noentry'
     const w = isStop ? 0.9 : 0.85, h = isStop ? 0.9 : 0.85
     const y = isStop ? (s.kind === 'allway' ? 1.95 : 2.05) : 1.95
     const rx = s.face[1], rz = -s.face[0] // to the sign's right as you face it

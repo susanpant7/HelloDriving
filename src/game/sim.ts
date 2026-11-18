@@ -7,7 +7,7 @@ import { REAL, keepLoadedAround, loadedAt } from '../real/load'
 import { ROUTE, followRoute, resetProgress, routeAt, routeStart } from '../real/route'
 import { initRealTraffic, stepRealTraffic } from '../real/realTraffic'
 import { lightFor } from '../real/signals'
-import { junctionsNear, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
+import { FILLET, junctionsNear, laneOffsets, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
 import { HW, CITY, MIXED_ROAD, NL, firstStage, hwRoute, SPAWN_Z, forkCurve, ACC_LEN, hC, toRoadX, toWorldX, forkShift, laneAt, makeStage, nearestLane, rampHeading, rampNear, rampX, type Ramp, rampU, routeName, splitX, unshiftX, onRoadW as hwOnRoad, recoverPose, startPose, type Route, type Stage } from '../highway/layout'
 import { initHighwayTraffic, resetJoins, setHighwayCount, shiftHighwayTraffic, stepHighwayTraffic, unwarpAll, warpAll } from '../highway/traffic'
 import { initialHud, useGame, type Look, type Msg, type Signal } from './store'
@@ -419,6 +419,8 @@ const swap = { dir: 0, lat: 0, t: 0 }
 const realStop = { key: '', minV: 99, prevD: Infinity, done: false, creditRed: false, red: null as null | { j: number; h: number; t: number; stopped: boolean } }
 /** real places: when the map round the car was last topped up, and whether the car is waiting for the map ahead to arrive */
 const realLoad = { t: 0, waiting: false, toldT: -99 }
+/** real places, lanes: how long you have been on the wrong side / the wrong way, the lane you are in, when the indicator was last on */
+const realLane = { wrongT: 0, wrongWayT: 0, toldT: -99, edge: -1, dir: 0, lane: -1, sigDir: 0, sigT: -99 }
 function startSwap(dir: -1 | 1) {
   const side = dir < 0 ? 'left' : 'right'
   if (sim.speed < 3) { say('Drive on first: lane assist changes lanes on the move', 'info'); return }
@@ -943,7 +945,7 @@ export function stepSim(dt: number) {
 
   // ---- rules ----
   if (WORLD.highway) { if (trackHighway()) return }
-  else if (WORLD.real) trackRealStop()
+  else if (WORLD.real) { trackRealStop(); trackRealLane(dt) }
   else {
     trackLane()
     trackJunction()
@@ -1417,6 +1419,43 @@ function trackStop() {
 }
 
 /* ---------- real places ---------- */
+/**
+ * Lanes in a real place: keep to the right of the centre line on a two-way road, never the wrong way down a one-way road, and signal
+ * before moving into another lane on a road with several lanes your way. (Not inside junctions or while turning or backing up.)
+ */
+function trackRealLane(dt: number) {
+  const m = REAL.map
+  const L = realLane
+  if (sim.signal) { L.sigDir = sim.signal; L.sigT = sim.t }
+  const reset = () => { L.wrongT = 0; L.wrongWayT = 0; L.edge = -1 }
+  if (!m || sim.dir < 0 || sim.speed < 3) { reset(); return }
+  if (junctionsNear(m, sim.x, sim.z).some((j) => j.ends.length >= 3 && Math.hypot(j.x - sim.x, j.z - sim.z) < j.r + FILLET + 2)) { reset(); return }
+  const r = roadAt(m, sim.x, sim.z)
+  if (!r || r.e.internal) { reset(); return }
+  const fwd = r.dx * -Math.sin(sim.h) + r.dz * -Math.cos(sim.h)
+  if (Math.abs(fwd) < 0.8) { reset(); return } // (turning, or across the road)
+  const dir: 1 | -1 = fwd > 0 ? 1 : -1
+  const tell = (text: string) => { if (sim.t - L.toldT > 8) { L.toldT = sim.t; say(text, 'warn') } }
+  // the wrong way down a one-way road
+  if (r.e.oneway && dir === -1) { if ((L.wrongWayT += dt) > 1.2) tell('Wrong way: this is a one-way road. Turn round when it is safe') } else L.wrongWayT = 0
+  // the wrong side of a two-way road: left of the centre line (or of the centre turn lane)
+  if (!r.e.oneway) {
+    const offRight = r.off * dir, c = (r.e.centre * r.e.laneW) / 2
+    if (offRight < -(c + 0.5)) { if ((L.wrongT += dt) > 1.5) tell('Keep right: you are on the wrong side of the road') } else L.wrongT = 0
+  }
+  // changing lanes without signalling (roads with two or more lanes your way)
+  const offs = laneOffsets(r.e, dir)
+  if (offs.length < 2) { L.edge = -1; return }
+  let k = 0
+  offs.forEach((o, i) => { if (Math.abs(o - r.off) < Math.abs(offs[k] - r.off)) k = i })
+  if (L.edge !== r.e.id || L.dir !== dir) { L.edge = r.e.id; L.dir = dir; L.lane = k; return }
+  if (k !== L.lane && Math.abs(offs[k] - r.off) < r.e.laneW * 0.3) { // (well into the new lane, not just touching the line)
+    const side = (offs[k] - offs[L.lane]) * dir > 0 ? 1 : -1 // (+1: moved right)
+    const signalled = L.sigDir === side && sim.t - L.sigT < 4
+    if (!signalled && !swap.dir) tell(`Signal before changing lanes: you moved ${side > 0 ? 'right' : 'left'} without the indicator`)
+    L.lane = k
+  }
+}
 /** the width of the lane you are in (real places) */
 function realLaneW() { return (REAL.map && realLaneTarget(REAL.map, sim.x, sim.z, sim.h)?.w) || 3.6 }
 /** where a drive in a real place starts: the start of the route (setting off the way it goes), or the place chosen */

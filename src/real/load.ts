@@ -10,7 +10,7 @@
  */
 import { useGame } from '../game/store'
 import { hasMapillary, parse, seenIn, type Seen } from './mapillary'
-import { convertOsm, toLatLon, type OsmData, type RealMap } from './roads'
+import { DRIVABLE, convertOsm, toLatLon, type OsmData, type RealMap } from './roads'
 
 export interface Place { label: string; lat: number; lon: number }
 
@@ -69,6 +69,10 @@ let dbP: Promise<IDBDatabase | null> | null = null
 function db(): Promise<IDBDatabase | null> {
   if (!dbP) {
     dbP = new Promise((res) => {
+      // The browser's copy is only a help: if it cannot be opened at once (another tab still has an older version open, which
+      // blocks an upgrade; private browsing; storage switched off), the game goes on without it rather than wait.
+      const giveUp = setTimeout(() => res(null), 1500)
+      const done = (d: IDBDatabase | null) => { clearTimeout(giveUp); res(d) }
       try {
         // version 2: the earlier copies (whole areas, with buildings: much bigger) are thrown away
         const rq = indexedDB.open('driveme-real', 2)
@@ -76,9 +80,15 @@ function db(): Promise<IDBDatabase | null> {
           if (rq.result.objectStoreNames.contains('tiles')) rq.result.deleteObjectStore('tiles')
           rq.result.createObjectStore('tiles')
         }
-        rq.onsuccess = () => res(rq.result)
-        rq.onerror = () => res(null)
-      } catch { res(null) }
+        rq.onsuccess = () => {
+          const d = rq.result
+          // (a newer version of the game opening it in another tab: let it upgrade instead of blocking it)
+          d.onversionchange = () => d.close()
+          done(d)
+        }
+        rq.onerror = () => done(null)
+        rq.onblocked = () => done(null)
+      } catch { done(null) }
     })
     // (the first version kept whole areas in localStorage: free that space)
     try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k?.startsWith('driveme.realArea.')) localStorage.removeItem(k) } } catch { /* ignore */ }
@@ -90,6 +100,7 @@ async function cacheGet(key: string): Promise<string | null> {
   const d = await db()
   if (!d) return null
   return new Promise((res) => {
+    setTimeout(() => res(null), 1500) // (never wait long for the browser's copy)
     try {
       const rq = d.transaction('tiles').objectStore('tiles').get(key)
       rq.onsuccess = () => res(fresh(rq.result) ? rq.result.text : null)
@@ -144,23 +155,79 @@ let lastErr = ''
 async function fetchTile(key: string): Promise<OsmData> {
   const cached = await cacheGet(key)
   if (cached) return JSON.parse(cached) as OsmData
-  // the main public server, and another public one if it is busy or down
-  let last = 'Download failed'
-  for (const url of SERVERS) {
-    try {
-      // (a request that hangs is given up after 30 s, so it never holds up the tiles behind it)
-      const ac = new AbortController(), to = setTimeout(() => ac.abort(), 30000)
-      const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: tileQuery(key) }), signal: ac.signal }).finally(() => clearTimeout(to))
-      if (!r.ok) { last = r.status === 429 || r.status === 504 ? 'The map server is busy: try again in a minute' : `Download failed (${r.status})`; continue }
-      const text = await r.text()
-      const data = JSON.parse(text) as OsmData
-      void cachePut(key, text)
-      return data
-    } catch { last = 'Could not reach the map server' }
-  }
-  throw new Error(last)
+  const text = await fromServers(key)
+  const data = JSON.parse(text) as OsmData
+  void cachePut(key, text)
+  return data
 }
-/** public OpenStreetMap data servers, tried in turn when one is busy or down */
+/**
+ * Ask the public map servers. The main one is asked first; if it has not answered after a few seconds (it is often busy), the others
+ * are asked as well, and the first good answer is used (the rest are cancelled). Each may take up to 75 s.
+ */
+function fromServers(key: string): Promise<string> {
+  const query = tileQuery(key)
+  const sources: Array<(signal: AbortSignal) => Promise<string>> = [
+    overpass(SERVERS[0], query),
+    osmApi(key), // (OpenStreetMap's own API: quick and reliable, used when the main server is slow)
+    ...SERVERS.slice(1).map((u) => overpass(u, query)),
+  ]
+  return new Promise((resolve, reject) => {
+    const acs: AbortController[] = []
+    let failed = 0, won = false, last = 'Could not reach the map server'
+    const t0 = performance.now()
+    // (while it waits, the page says so: the download is going on, just slowly)
+    const tick = setInterval(() => {
+      const sec = Math.round((performance.now() - t0) / 1000)
+      if (sec >= 6 && useGame.getState().real.status === 'loading')
+        useGame.setState((st) => ({ real: { ...st.real, msg: `Downloading the roads… ${sec} s (the public map server is busy today; it can take up to a minute)` } }))
+    }, 1000)
+    const finish = () => { clearInterval(tick); timers.forEach(clearTimeout); acs.forEach((a) => a.abort()) }
+    const tryOne = async (src: (signal: AbortSignal) => Promise<string>) => {
+      if (won) return
+      const ac = new AbortController()
+      acs.push(ac)
+      const to = setTimeout(() => ac.abort(), 75000)
+      try {
+        const text = await src(ac.signal)
+        if (!won) { won = true; finish(); resolve(text) }
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError') && e instanceof Error) last = e.message.startsWith('Download') || e.message.startsWith('The map') ? e.message : last
+        if (++failed === sources.length && !won) { finish(); reject(new Error(last)) }
+        else if (!won) startNext() // (one failed outright: do not wait, ask the next one now)
+      } finally { clearTimeout(to) }
+    }
+    let next = 0
+    const startNext = () => { if (next < sources.length) void tryOne(sources[next++]) }
+    const timers = [5000, 12000, 20000].map((ms) => setTimeout(startNext, ms))
+    startNext()
+  })
+}
+/** a public Overpass server (OpenStreetMap data by query) */
+const overpass = (url: string, query: string) => async (signal: AbortSignal) => {
+  const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: query }), signal })
+  if (!r.ok) throw new Error(r.status === 429 || r.status === 504 ? 'The map server is busy: try again in a minute' : `Download failed (${r.status})`)
+  const text = await r.text()
+  JSON.parse(text) // (a busy server sometimes answers with an error page)
+  return text
+}
+/**
+ * OpenStreetMap's own API: everything in the tile (buildings and all, about 1 MB), from which only what the game uses is kept: the
+ * drivable roads with their points, and the points marked as lights, stop and give-way signs or turning circles (about 40 KB).
+ */
+const osmApi = (key: string) => async (signal: AbortSignal) => {
+  const [i, j] = key.split(',').map(Number)
+  const bb = `${(j * TILE).toFixed(4)},${(i * TILE).toFixed(4)},${((j + 1) * TILE).toFixed(4)},${((i + 1) * TILE).toFixed(4)}`
+  const r = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${bb}`, { signal, headers: { Accept: 'application/json' } })
+  if (!r.ok) throw new Error(`Download failed (${r.status})`)
+  type El = { type: string; id: number; nodes?: number[]; tags?: Record<string, string> }
+  const all = (await r.json()).elements as El[]
+  const ways = all.filter((e) => e.type === 'way' && e.tags?.highway && DRIVABLE.has(e.tags.highway))
+  const need = new Set(ways.flatMap((w) => w.nodes ?? []))
+  const SIGN = /^(stop|give_way|traffic_signals|turning_circle|turning_loop)$/
+  const keep = all.filter((e) => e.type === 'node' && (need.has(e.id) || SIGN.test(e.tags?.highway ?? ''))).map((n) => ({ ...n, timestamp: undefined, version: undefined, changeset: undefined, user: undefined, uid: undefined }))
+  return JSON.stringify({ elements: [...ways.map((w) => ({ type: 'way', id: w.id, nodes: w.nodes, tags: w.tags })), ...keep] })
+}
+/** public OpenStreetMap data servers: the main one first, the others as well when it is slow or down */
 const SERVERS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']
 
 /** where the car is and which way it is going (degrees): the tiles nearest it, and ahead of it, are downloaded first */
