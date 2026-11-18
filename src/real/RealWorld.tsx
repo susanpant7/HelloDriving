@@ -5,6 +5,7 @@ import { quality } from '../game/quality'
 import { sim } from '../game/sim'
 import { useGame } from '../game/store'
 import { REAL, tileBoxes, type Place } from './load'
+import { disposeLabels, labelMeshes } from './labels'
 import { RealLights } from './RealLights'
 import { buildBuildings, buildRoads, placeTrees, signAtlas, signMesh, tileSignature, type Box } from './realBuild'
 
@@ -53,7 +54,10 @@ function buildTile(m: NonNullable<typeof REAL.map>, box: Box, mats: Mats) {
     })
     for (const t of [m1, m2]) { t.layers.set(4); t.computeBoundingSphere(); g.add(t); inst.push(t) }
   }
-  return { group: g, dispose: () => { geos.forEach((x) => x.dispose()); inst.forEach((t) => t.dispose()) } }
+  // route shields, numbers painted in the lanes, street-name blades
+  const lab = labelMeshes(roads.labels)
+  g.add(lab.group)
+  return { group: g, dispose: () => { geos.forEach((x) => x.dispose()); inst.forEach((t) => t.dispose()); lab.dispose() } }
 }
 
 /** the cells built so far (kept between renders), for the place they were built for */
@@ -107,7 +111,7 @@ export function RealWorld() {
   }
 
   useFrame((_, dt) => {
-    if (REAL.place !== builtFor) { clear(); builtFor = REAL.place; plan.v = -1 }
+    if (REAL.place !== builtFor) { clear(); disposeLabels(); builtFor = REAL.place; plan.v = -1 }
     const m = REAL.map
     if (!m) { if (built.size) clear(); return }
     const version = useGame.getState().real.version
@@ -124,7 +128,7 @@ export function RealWorld() {
     }
   })
   useEffect(() => () => {
-    clear(); builtFor = null
+    clear(); disposeLabels(); builtFor = null
     for (const v of Object.values(mats)) (v as { dispose?: () => void }).dispose?.()
   }, [mats])
 

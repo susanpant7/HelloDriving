@@ -48,6 +48,8 @@ export interface Edge {
   /** a short piece of road inside a larger intersection (between the junctions where a divided road crosses another): no paint,
    *  kerbs or stop lines of its own, and nobody stops at its end */
   internal: boolean
+  /** route numbers (the map's ref, e.g. "US 81;US 287", "I 35W", "FM 1938"), or '' */
+  ref: string
   /** a bridge or overpass: how many levels up (0 on the ground); and the road's height at its a and b ends (m: a road leading onto a
    *  bridge climbs to it over its last stretch) */
   level: number
@@ -243,7 +245,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     // a bridge or overpass (a tunnel is simply drawn at ground level)
     const layer = parseInt(t.layer ?? '', 10)
     const level = t.tunnel && t.tunnel !== 'no' ? 0 : t.bridge && t.bridge !== 'no' ? Math.max(1, Number.isFinite(layer) ? layer : 1) : Number.isFinite(layer) && layer > 0 ? layer : 0
-    const base = { level: Math.min(level, 3), hA: 0, hB: 0, internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
+    const base = { ref: t.ref ?? '', level: Math.min(level, 3), hA: 0, hB: 0, internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
     let start = 0
     for (let i = 1; i < list.length; i++) {
       if (i < list.length - 1 && (uses.get(list[i]) ?? 0) < 2) continue // (not a junction: the road carries on)

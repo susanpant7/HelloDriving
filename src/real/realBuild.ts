@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { bladeText, routes, type Label } from './labels'
 import { FILLET, arrives, clusterHull, endDir, halfWidth, heightAt, junctionRing, laneOffsets, onRealRoad, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
 
 /**
@@ -209,6 +210,9 @@ export function tileSignature(m: RealMap, b: Box) {
 export function buildRoads(m: RealMap, box?: Box) {
   const road = new Geo(), marks = new Geo(), solid = new Geo()
   const signs: SignDef[] = []
+  const labels: Label[] = []
+  /** a post (with a sign on it) only where it stands off every road */
+  const clear = (x: number, z: number) => !onRealRoad(m, x, z, 0.3)
 
   for (const e of m.edges) for (const [a, b] of pieces(e, box)) buildEdge(e, a, b)
   /** one stretch [a, b) of an edge: its road surface, kerbs and sidewalks, paint and speed signs */
@@ -336,6 +340,38 @@ export function buildRoads(m: RealMap, box?: Box) {
       }
     }
 
+    // ---- route numbers: shields on a post after each junction and every 800 m (several routes: stacked), and the number painted
+    // in each lane of a numbered main road with two or more lanes your way ----
+    if (e.ref && !e.internal && e.len > 60) {
+      const rs = routes(e.ref)
+      for (const dir of e.oneway ? [1] : [1, -1]) {
+        for (let k = 0; ; k++) {
+          const along = 45 + k * 800
+          const s = dir === 1 ? s0 + along : s1 - along
+          if (s < s0 + 20 || s > s1 - 20) break
+          if (s < a || s >= b) continue
+          const [px, pz, dx, dz] = pointAt(e, s)
+          const tx = dx * dir, tz = dz * dir, off = (dir === 1 ? wR : wL) + 1.3
+          const x = px - tz * off, z = pz + tx * off, y0 = heightAt(e, s)
+          if (!clear(x, z)) continue
+          rs.forEach((r, i) => labels.push({ kind: 'shield', text: r.label, x, z, y0, y: 2.4 + i * 0.85, w: 0.75, h: 0.75, face: [-tx, -tz] }))
+          solid.box(x, y0, z, 0.07, 2.05 + rs.length * 0.85, 0.07, POST)
+        }
+        // painted in the lanes
+        const lanes = laneOffsets(e, dir as 1 | -1)
+        if (lanes.length >= 2 && isMainRoad(e)) {
+          for (let k = 0; ; k++) {
+            const along = 70 + k * 450
+            const s = dir === 1 ? s0 + along : s1 - along
+            if (s < s0 + 15 || s > s1 - 15) break
+            if (s < a || s >= b) continue
+            const [px, pz, dx, dz] = pointAt(e, s)
+            for (const o of lanes) labels.push({ kind: 'paint', text: rs[0].label.replace(/^(US|SH|FM) /, ''), x: px - dz * o, z: pz + dx * o, y0: heightAt(e, s), y: 0, w: Math.min(2.6, e.laneW * 0.7), h: 4.2, face: [-dx * dir, -dz * dir] })
+          }
+        }
+      }
+    }
+
     // ---- speed limit signs: near the start of each long enough road, for each way it can be driven ----
     if (e.len > 130 && e.cls !== 'service' && !e.internal) {
       const mph = Math.round(e.limit / 0.44704 / 5) * 5
@@ -358,6 +394,32 @@ export function buildRoads(m: RealMap, box?: Box) {
     if ((j.ends.length === 1 && !j.bulb) || j.ends.length === 2) disc(road, j.x, j.z, j.r0, Y_ROAD + j.y, [1, 1, 1], 16)
     if (j.ends.length < 3) continue
     junctionSurface(road, m, j)
+    // ---- street names: a pole on a corner with a green blade for each street, each blade running along its street (once for a
+    // larger intersection) ----
+    if (j.cluster < 0 || m.clusters[j.cluster][0] === j) {
+      const cl = j.cluster >= 0 ? m.clusters[j.cluster] : [j]
+      const named = new Map<string, P2>()
+      for (const k of cl) for (const { e: ei, atA } of k.ends) { const ed = m.edges[ei]; if (ed.name && !ed.internal && !named.has(ed.name)) named.set(ed.name, endDir(ed, atA)) }
+      if (named.size >= 2) {
+        // the corner: to the right of the first named road as you arrive, just past its stop line
+        const first = [...cl[0].ends].find(({ e: ei }) => m.edges[ei].name && !m.edges[ei].internal)
+        if (first) {
+          const ed = m.edges[first.e], d = endDir(ed, first.atA)
+          const right = first.atA ? halfWidth(ed, -1) : halfWidth(ed, 1)
+          const rx = d[1], rz = -d[0], dist = stopDist(cl[0], first.e) + 2.2
+          const x = cl[0].x + d[0] * dist + rx * (right + 2.2), z = cl[0].z + d[1] * dist + rz * (right + 2.2)
+          if (clear(x, z)) {
+            const y0 = cl[0].y
+            ;[...named].slice(0, 2).forEach(([name, dd], i) => {
+              const text = bladeText(name)
+              // (the blade runs along its street, so it faces across it: its face is the street's direction turned a quarter)
+              labels.push({ kind: 'blade', text, x, z, y0, y: 3.15 + i * 0.32, w: Math.min(2.4, Math.max(1.2, text.length * 0.13 + 0.4)), h: 0.28, face: [dd[1], -dd[0]] })
+            })
+            solid.box(x, y0, z, 0.08, 3.5, 0.08, POST)
+          }
+        }
+      }
+    }
     // a larger intersection (a divided road crossing another): one surface over the whole of it, drawn with its first junction
     if (j.cluster >= 0 && m.clusters[j.cluster][0] === j) {
       const hull = clusterHull(m, j.cluster)
@@ -410,7 +472,7 @@ export function buildRoads(m: RealMap, box?: Box) {
   for (const s of signs) {
     solid.box(s.x, s.y0 ?? 0, s.z, 0.07, s.kind === 'stop' || s.kind === 'allway' ? 2.3 : 2.4, 0.07, POST)
   }
-  return { road: road.build(), marks: marks.build(), solid: solid.build(), signs }
+  return { road: road.build(), marks: marks.build(), solid: solid.build(), signs, labels }
 }
 
 /** the surface of a junction: a fan from its centre round its outline (the roads' edges and the rounded corners between them) */
