@@ -12,7 +12,13 @@ import { useGame } from '../game/store'
 import { hasMapillary, parse, seenIn, type Seen } from './mapillary'
 import { DRIVABLE, convertOsm, toLatLon, type OsmData, type RealMap } from './roads'
 
-export interface Place { label: string; lat: number; lon: number }
+export interface Place {
+  label: string
+  lat: number
+  lon: number
+  /** (the start) which way the car should face: a compass bearing in degrees (0 north, 90 east); none = whichever way suits the road */
+  heading?: number
+}
 
 /** the place being driven: its map (all the tiles loaded so far), the start, and which tiles are loaded */
 export const REAL: { map: RealMap | null; place: Place | null; tiles: Set<string> } = { map: null, place: null, tiles: new Set() }

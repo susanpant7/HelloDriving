@@ -1,7 +1,7 @@
 import { sim } from '../game/sim'
 import { REAL } from './load'
 import { ROUTE, routeXY } from './route'
-import { halfWidth, type RealMap } from './roads'
+import { halfWidth, stopDist, type RealMap } from './roads'
 
 /**
  * The centre screen's map for a real place: heading-up, the roads drawn to width (main roads lighter), the street names along them,
@@ -67,7 +67,7 @@ export function drawRealMap(g: CanvasRenderingContext2D, w: number, h: number) {
       const k = atA ? 2 : e.pts.length - 4
       const dx = e.pts[k] - e.pts[atA ? 0 : e.pts.length - 2], dz = e.pts[k + 1] - e.pts[atA ? 1 : e.pts.length - 1]
       const L = Math.hypot(dx, dz) || 1, ux = dx / L, uz = dz / L
-      const d = j.r + 1.2, wR = atA ? halfWidth(e, -1) : halfWidth(e, 1)
+      const d = stopDist(j, ei), wR = atA ? halfWidth(e, -1) : halfWidth(e, 1)
       const bx = j.x + ux * d, bz = j.z + uz * d
       g.beginPath(); g.moveTo(bx, bz); g.lineTo(bx + uz * wR, bz - ux * wR); g.stroke()
     }

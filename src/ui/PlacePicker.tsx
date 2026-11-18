@@ -5,7 +5,7 @@ import { REAL, cancelPlace, openPlace, placeName, savedPlace, searchPlaces, type
 import { ROUTE, cancelRoute, savedDest, setDestination } from '../real/route'
 import { MapPicker } from './MapPicker'
 
-type Which = 'start' | 'dest'
+type Which = 'start' | 'dest' | 'dir'
 
 /** an address search box with its list of matches */
 function PlaceSearch({ value, onValue, placeholder, label, onChoose, disabled, extra }: { value: string; onValue: (v: string) => void; placeholder: string; label: string; onChoose: (p: Place) => void; disabled: boolean; extra?: ReactNode }) {
@@ -64,18 +64,26 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
   const ready = real.status === 'ready' && !downloading
   const locked = downloading || ready
 
-  const chooseA = (p: Place) => { setA(p); setQA(short(p.label)); setCenter({ lat: p.lat, lon: p.lon, zoom: 16 }) }
+  const chooseA = (p: Place) => { setA((cur) => ({ ...p, heading: cur?.heading })); setQA(short(p.label)); setCenter({ lat: p.lat, lon: p.lon, zoom: 16 }) }
   const chooseB = (p: Place | null) => { setB(p); setQB(p ? short(p.label) : ''); if (p) setCenter({ lat: p.lat, lon: p.lon, zoom: 15 }) }
   // a tap on the map: the pin moves at once, and the street name is looked up
   const pickOnMap = (lat: number, lon: number) => {
     if (locked) return
     const which = tapSets
+    if (which === 'dir') {
+      // which way the car faces: towards the point tapped, from A
+      if (!a) return
+      const north = lat - a.lat, east = (lon - a.lon) * Math.cos((a.lat * Math.PI) / 180)
+      if (Math.hypot(north, east) < 1e-6) return
+      setA({ ...a, heading: ((Math.atan2(east, north) * 180) / Math.PI + 360) % 360 })
+      return
+    }
     const p = { label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon }
-    if (which === 'start') { setA(p); setQA('Looking up the street…') } else { setB(p); setQB('Looking up the street…') }
+    if (which === 'start') { setA({ ...p, heading: a?.heading }); setQA('Looking up the street…') } else { setB(p); setQB('Looking up the street…') }
     clearTimeout(pickT.current)
     pickT.current = window.setTimeout(async () => {
       const named = { ...p, label: await placeName(lat, lon) }
-      if (which === 'start') { setA(named); setQA(short(named.label)) } else { setB(named); setQB(short(named.label)) }
+      if (which === 'start') { setA((cur) => ({ ...named, heading: cur?.heading })); setQA(short(named.label)) } else { setB(named); setQB(short(named.label)) }
     }, 300)
   }
   const download = () => {
@@ -104,9 +112,17 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
           <span>Tap the map to set:</span>
           <button type="button" disabled={locked} className={tapSets === 'start' ? 'on' : ''} onClick={() => setTapSets('start')}>A start</button>
           <button type="button" disabled={locked} className={tapSets === 'dest' ? 'on' : ''} onClick={() => setTapSets('dest')}>B destination</button>
+          <button type="button" disabled={locked || !a} className={tapSets === 'dir' ? 'on' : ''} onClick={() => setTapSets('dir')} title="Tap the map where the car should head">Direction</button>
         </div>
       </div>
-      <MapPicker center={center} marker={a} dest={b} route={routeLine} tiles={[...REAL.tiles]} onPick={pickOnMap} />
+      <MapPicker center={center} marker={a} heading={a?.heading ?? null} dest={b} route={routeLine} tiles={[...REAL.tiles]} onPick={pickOnMap} />
+      {a && (
+        <p className="pp-msg pp-dir">
+          {a.heading === undefined
+            ? <>Car direction: <b>automatic</b> (along the road{b ? ', the way the route goes' : ''}). Choose <b>Direction</b>, then tap the map where the car should head.</>
+            : <>Car facing <b>{compass(a.heading)}</b> ({Math.round(a.heading)}°): it starts on the nearest road, facing the way along it closest to this.{!locked && <> <button type="button" className="linkbtn" onClick={() => setA({ ...a, heading: undefined })}>Automatic</button></>}</>}
+        </p>
+      )}
 
       <div className="pp-status" aria-live="polite">
         {!locked && real.status !== 'error' && route.status !== 'error' && <p className="pp-msg">{a ? <>Start: <b>{short(a.label)}</b>{b ? <> · Destination: <b>{short(b.label)}</b></> : ' · no destination (free drive)'}</> : 'Search for an address, or tap a street on the map, to choose where to start.'}</p>}
@@ -140,4 +156,5 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
     </div>
   )
 }
+const compass = (deg: number) => ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round(deg / 45) % 8]
 const short = (label: string) => label.split(',').slice(0, 3).join(',').trim()

@@ -71,6 +71,8 @@ export interface Junction {
   bulb: number
   /** the larger intersection it is part of (an index into RealMap.clusters), or -1 */
   cluster: number
+  /** for each road meeting here: how far from the centre it is clear of the other roads (its stop line goes just beyond) */
+  set: Map<number, number>
   /** the widest road's half width here (the round patch drawn at a bend or a dead end) */
   r0: number
   /** how each arriving road is controlled, by edge index (only roads that can arrive here) */
@@ -195,7 +197,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       const o = nodes.get(n)!
       k = junctions.length
       jIndex.set(n, k)
-      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map(), cluster: -1 })
+      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map(), cluster: -1, set: new Map() })
     }
     return k
   }
@@ -264,6 +266,26 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     for (const { e } of j.ends) r = Math.max(r, halfWidth(edges[e], 1), halfWidth(edges[e], -1))
     j.r0 = r
     j.r = j.ends.length >= 3 ? r + 0.5 : j.ends.length === 2 ? 0 : r
+  }
+  // ---- where each road arriving at a junction is clear of the others: its own stop line goes just there (a small street meeting
+  // a wide road stops at the wide road's kerb, not as far back as the widest road's width) ----
+  for (const j of junctions) {
+    if (j.ends.length < 3) continue
+    const info = j.ends.map(({ e, atA }) => {
+      const ed = edges[e]
+      return { e, d: endDir(ed, atA), w: Math.max(halfWidth(ed, 1), halfWidth(ed, -1)) }
+    })
+    for (const p of info) {
+      let t = 3
+      for (const q of info) {
+        if (q === p) continue
+        const cos = p.d[0] * q.d[0] + p.d[1] * q.d[1], sin = Math.abs(p.d[0] * q.d[1] - p.d[1] * q.d[0])
+        if (sin < 0.26) continue // (nearly in line: the same road carrying on through the junction)
+        // the approach's whole width is clear of the other road's band once its centre is this far out
+        t = Math.max(t, cos >= 0 ? (q.w + p.w * cos) / sin : q.w + p.w * 0.3)
+      }
+      j.set.set(p.e, Math.min(t, 30))
+    }
   }
 
   // ---- larger intersections: where a divided road crosses another road, the map has a junction for each carriageway it crosses,
@@ -390,7 +412,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       for (const { e, atA } of j.ends) {
         if (!arrives(edges[e], atA)) continue
         const d = endDir(edges[e], atA), right = atA ? halfWidth(edges[e], -1) : halfWidth(edges[e], 1)
-        const px = j.x + d[0] * (j.r + 1.2) + d[1] * right, pz = j.z + d[1] * (j.r + 1.2) - d[0] * right
+        const px = j.x + d[0] * stopDist(j, e) + d[1] * right, pz = j.z + d[1] * stopDist(j, e) - d[0] * right
         const dd = Math.hypot(px - x, pz - z)
         if (dd < bd) { bd = dd; best = { j, e } }
       }
@@ -665,7 +687,7 @@ export function junctionRing(m: RealMap, j: Junction): Array<[number, number]> {
   return ring
 }
 /** corner rounding (kerb return radius, m) */
-export const FILLET = 6
+export const FILLET = 5
 
 let jGrid: { m: RealMap; g: Map<number, Junction[]> } | null = null
 /** junctions within about 40 m of a point */
@@ -788,4 +810,9 @@ export function clusterHull(m: RealMap, ci: number): Array<[number, number]> {
   const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)]
   hulls.set(cl, hull)
   return hull
+}
+
+/** how far from a junction's centre the stop line of a road arriving there is (m) */
+export function stopDist(j: Junction, e: number) {
+  return (j.set.get(e) ?? j.r) + 1.0
 }

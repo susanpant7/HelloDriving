@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { FILLET, arrives, clusterHull, endDir, halfWidth, junctionRing, laneOffsets, onRealRoad, pointAt, type Edge, type Junction, type RealMap } from './roads'
+import { FILLET, arrives, clusterHull, endDir, halfWidth, junctionRing, laneOffsets, onRealRoad, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
 
 /**
  * A real place, drawn from its map data: the road surface (with rounded kerb corners and cul-de-sac bulbs), kerbs and sidewalks,
@@ -91,9 +91,10 @@ function disc(g: Geo, x: number, z: number, r: number, y: number, color: V3, n =
   }
 }
 
-/** how far from each end of an edge the junction (and its rounded corners) reaches: paint, kerbs and sidewalks stop there */
-function trims(m: RealMap, e: Edge) {
-  const at = (j: Junction) => (j.ends.length >= 3 ? j.r + FILLET + 1 : j.bulb ? j.bulb - 1 : 0)
+/** how far from each end of an edge things stop at a junction: the paint at the stop line, kerbs and sidewalks where the
+ *  rounded corner begins */
+function trims(m: RealMap, e: Edge, walk = false) {
+  const at = (j: Junction) => (j.ends.length >= 3 ? stopDist(j, e.id) + (walk ? FILLET - 0.5 : 0) : j.bulb ? j.bulb - 1 : 0)
   return [at(m.junctions[e.a]), at(m.junctions[e.b])]
 }
 const sidewalked = (e: Edge) => e.cls === 'residential' || e.cls === 'unclassified' || e.cls === 'living_street' || e.cls === 'tertiary' || e.cls === 'secondary' || e.cls === 'primary'
@@ -181,56 +182,62 @@ export function buildRoads(m: RealMap, box?: Box) {
     const wR = halfWidth(e, 1), wL = halfWidth(e, -1)
     strip(road, sub(e, a, b), -wL, wR, Y_ROAD, [1, 1, 1])
     const [t0, t1] = trims(m, e)
-    // (s0, s1: where the paint and sidewalks run along the whole edge; lo, hi: the part of that in this stretch)
+    // (s0, s1: where the paint runs along the whole edge; lo, hi: the part of that in this stretch; w0..w1: the sidewalks)
     const s0 = Math.min(t0, e.len / 2), s1 = Math.max(e.len - t1, e.len / 2)
     const lo = Math.max(s0, a), hi = Math.min(s1, b)
     const seg = () => sub(e, lo, hi)
+    const [u0, u1] = trims(m, e, true)
+    const w0 = Math.max(Math.min(u0, e.len / 2), a), w1 = Math.min(Math.max(e.len - u1, e.len / 2), b)
 
     // (a piece of road inside a larger intersection: just the road surface; the intersection has no paint or kerbs in its middle)
     if (e.internal) return
     // ---- kerbs and sidewalks (a grass strip between the kerb and the sidewalk) ----
-    if (sidewalked(e) && s1 - s0 > 4 && hi > lo) {
+    if (sidewalked(e) && w1 - w0 > 0.5) {
       const divided = e.oneway && !e.cls.endsWith('_link')
       for (const side of divided ? [1] : [1, -1]) {
         const w = side === 1 ? wR : wL
-        const l = seg()
+        const l = sub(e, w0, w1)
         if (side === 1) { strip(solid, l, w, w + 0.25, Y_WALK, KERB); strip(solid, l, w + 1.6, w + 3.1, Y_WALK, WALK) }
         else { strip(solid, l, -w - 0.25, -w, Y_WALK, KERB); strip(solid, l, -w - 3.1, -w - 1.6, Y_WALK, WALK) }
       }
     }
 
-    // ---- lane paint ----
+    // ---- lane paint (lines a little wider than real ones, 20 cm, so they stay clear from the driver's seat at a distance) ----
     if (s1 - s0 > 2 && hi > lo) {
       const main = isMainRoad(e)
+      const LW = 0.2, DW = 0.18
       if (e.oneway) {
         // a one-way carriageway: yellow line on the left edge, white on the right, dashes between its lanes
         const half = (e.lanesF * e.laneW) / 2
-        if (main) {
-          strip(marks, seg(), -half + 0.05, -half + 0.2, Y_MARK, YELLOW)
-          strip(marks, seg(), half - 0.2, half - 0.05, Y_MARK, WHITE)
+        if (main || e.lanesF > 1) {
+          strip(marks, seg(), -half + 0.05, -half + 0.05 + LW, Y_MARK, YELLOW)
+          strip(marks, seg(), half - 0.05 - LW, half - 0.05, Y_MARK, WHITE)
         }
-        for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, -half + k * e.laneW, WHITE, 0.12, lo, hi)
+        for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, -half + k * e.laneW, WHITE, DW, lo, hi)
       } else {
-        // a two-way road: double yellow down the middle (a centre turn lane gets a yellow line on each side), dashes between lanes
-        // going the same way, white edge lines on main roads. Quiet residential streets have no paint, as in most US towns.
+        // a two-way road: double yellow down the middle (a centre turn lane: solid yellow outside, dashed yellow inside, each side),
+        // dashes between lanes going the same way, white edge lines on main roads
         const c = (e.centre * e.laneW) / 2
         if (main || e.lanesF + e.lanesB > 2) {
           if (e.centre) {
             for (const sd of [1, -1]) {
-              strip(marks, seg(), sd * c - 0.07, sd * c + 0.07, Y_MARK, YELLOW)
-              dashes(marks, e, s0, s1, sd * (c - 0.25), YELLOW, 0.12, lo, hi)
+              strip(marks, seg(), sd * c - LW / 2, sd * c + LW / 2, Y_MARK, YELLOW)
+              dashes(marks, e, s0, s1, sd * (c - 0.35), YELLOW, DW, lo, hi)
             }
           } else {
-            strip(marks, seg(), -0.22, -0.08, Y_MARK, YELLOW)
-            strip(marks, seg(), 0.08, 0.22, Y_MARK, YELLOW)
+            strip(marks, seg(), -0.1 - LW, -0.1, Y_MARK, YELLOW)
+            strip(marks, seg(), 0.1, 0.1 + LW, Y_MARK, YELLOW)
           }
-          for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, c + k * e.laneW, WHITE, 0.12, lo, hi)
-          for (let k = 1; k < e.lanesB; k++) dashes(marks, e, s0, s1, -(c + k * e.laneW), WHITE, 0.12, lo, hi)
+          for (let k = 1; k < e.lanesF; k++) dashes(marks, e, s0, s1, c + k * e.laneW, WHITE, DW, lo, hi)
+          for (let k = 1; k < e.lanesB; k++) dashes(marks, e, s0, s1, -(c + k * e.laneW), WHITE, DW, lo, hi)
           if (main) {
             const ef = c + e.lanesF * e.laneW, eb = c + e.lanesB * e.laneW
-            strip(marks, seg(), ef - 0.15, ef, Y_MARK, WHITE)
-            strip(marks, seg(), -eb, -eb + 0.15, Y_MARK, WHITE)
+            strip(marks, seg(), ef - LW, ef, Y_MARK, WHITE)
+            strip(marks, seg(), -eb, -eb + LW, Y_MARK, WHITE)
           }
+        } else if (e.cls !== 'service' && e.cls !== 'living_street') {
+          // a quiet two-way street (many US towns paint nothing here): a dashed yellow centre line, so your side is always clear
+          dashes(marks, e, s0, s1, 0, YELLOW, DW, lo, hi)
         }
       }
     }
@@ -242,7 +249,7 @@ export function buildRoads(m: RealMap, box?: Box) {
       const j = m.junctions[dir === 1 ? e.b : e.a]
       if (j.ends.length < 3) continue
       const offs = laneOffsets(e, dir)
-      const line = j.r + 1.2 // (the stop line, from the junction centre)
+      const line = stopDist(j, e.id) // (the stop line, from the junction centre)
       for (const back of [7, 32]) {
         const dEnd = line + back // distance of the arrow's tip from the edge's end
         const sTip = dir === 1 ? e.len - dEnd : dEnd
@@ -266,7 +273,7 @@ export function buildRoads(m: RealMap, box?: Box) {
     // ---- DO NOT ENTER: where a one-way road ends at a junction, facing anyone who would turn into it the wrong way ----
     if (e.oneway && !e.ring && !e.cls.startsWith('motorway')) { // (not round a roundabout, where every piece is one-way)
       const j = m.junctions[e.b]
-      const sAt = Math.max(0, e.len - (j.r + 3))
+      const sAt = Math.max(0, e.len - (stopDist(j, e.id) + 2))
       if (j.ends.length >= 3 && e.len > 12 && sAt >= a && sAt < b) {
         const [px, pz, dx, dz] = pointAt(e, sAt)
         // a driver turning in would travel b -> a (along -d); their right is (dz, -dx)... the sign stands on their right, facing them
@@ -313,7 +320,7 @@ export function buildRoads(m: RealMap, box?: Box) {
       if (!arrives(m.edges[ei], atA) || m.edges[ei].internal) continue
       const e = m.edges[ei]
       const d = endDir(e, atA) // pointing away from the junction, along the road
-      const dist = j.r + 1.2
+      const dist = stopDist(j, ei)
       if (dist > e.len - 2) continue
       // arriving traffic travels -d; its right-hand side is (d.z, -d.x)
       const rx = d[1], rz = -d[0]

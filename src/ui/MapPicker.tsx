@@ -10,6 +10,8 @@ interface Props {
   /** the chosen starting point, the destination, and the route between them ([lat, lon] points) */
   marker: { lat: number; lon: number } | null
   dest?: { lat: number; lon: number } | null
+  /** which way the car will face at the start (compass degrees), drawn as an arrow from the start pin */
+  heading?: number | null
   route?: Array<[number, number]> | null
   /** the downloaded driving tiles ("i,j" of 0.01 degree tiles) */
   tiles: string[]
@@ -26,11 +28,11 @@ const latOf = (y: number, z: number) => { const n = Math.PI - (2 * Math.PI * y) 
 /** map pictures, shared by every map on the page */
 const imgs = new Map<string, HTMLImageElement>()
 
-export function MapPicker({ center, marker, dest = null, route = null, tiles, onPick }: Props) {
+export function MapPicker({ center, marker, heading = null, dest = null, route = null, tiles, onPick }: Props) {
   const cv = useRef<HTMLCanvasElement>(null)
   const view = useRef({ lat: 39.5, lon: -98.35, z: 4 }) // (the whole of the US, until a place is known)
-  const props = useRef({ marker, dest, route, tiles, onPick })
-  props.current = { marker, dest, route, tiles, onPick }
+  const props = useRef({ marker, heading, dest, route, tiles, onPick })
+  props.current = { marker, heading, dest, route, tiles, onPick }
   const drawRef = useRef<() => void>(() => {})
   const zoomRef = useRef<(dz: number) => void>(() => {})
 
@@ -40,7 +42,7 @@ export function MapPicker({ center, marker, dest = null, route = null, tiles, on
     view.current = { lat: center.lat, lon: center.lon, z: center.zoom ?? Math.max(view.current.z, 16) }
     drawRef.current()
   }, [center?.lat, center?.lon, center?.zoom])
-  useEffect(() => { drawRef.current() }, [marker?.lat, marker?.lon, dest?.lat, dest?.lon, route, tiles.join(';')])
+  useEffect(() => { drawRef.current() }, [marker?.lat, marker?.lon, heading, dest?.lat, dest?.lon, route, tiles.join(';')])
 
   useEffect(() => {
     const c = cv.current!
@@ -101,7 +103,23 @@ export function MapPicker({ center, marker, dest = null, route = null, tiles, on
         }
         const mk = props.current.marker, ds = props.current.dest
         if (ds) pin(ds.lat, ds.lon, '#e11d48', 'B')
-        if (mk) pin(mk.lat, mk.lon, '#16a34a', 'A')
+        if (mk) {
+          // the car's direction: an arrow from the start pin
+          const hd = props.current.heading
+          if (hd !== null && hd !== undefined) {
+            const [x, y] = P(mk.lat, mk.lon)
+            const r = (hd * Math.PI) / 180, ux = Math.sin(r), uy = -Math.cos(r), L = 46
+            g.lineCap = 'round'
+            for (const [w, c] of [[9, '#fff'], [5, '#16a34a']] as const) {
+              g.strokeStyle = c; g.lineWidth = w
+              g.beginPath(); g.moveTo(x, y); g.lineTo(x + ux * L, y + uy * L); g.stroke()
+            }
+            const tx = x + ux * (L + 10), ty = y + uy * (L + 10)
+            g.fillStyle = '#16a34a'; g.strokeStyle = '#fff'; g.lineWidth = 2
+            g.beginPath(); g.moveTo(tx, ty); g.lineTo(tx - ux * 16 - uy * 9, ty - uy * 16 + ux * 9); g.lineTo(tx - ux * 16 + uy * 9, ty - uy * 16 - ux * 9); g.closePath(); g.fill(); g.stroke()
+          }
+          pin(mk.lat, mk.lon, '#16a34a', 'A')
+        }
       })
     }
     drawRef.current = draw

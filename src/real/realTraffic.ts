@@ -10,7 +10,7 @@
 import { cars, CAR_L } from '../game/trafficAI'
 import { useGame } from '../game/store'
 import { REAL } from './load'
-import { endDir, headingOf, laneOffsets, nearEdges, pointAt, type Edge, type Junction, type RealMap } from './roads'
+import { endDir, headingOf, laneOffsets, nearEdges, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
 import { lightFor } from './signals'
 
 /** how many cars round you, by traffic level (1-5) */
@@ -52,14 +52,14 @@ const startJ = (m: RealMap, e: Edge, dir: 1 | -1) => m.junctions[dir === 1 ? e.a
 /** where a car stops before the junction at the end (distance along the edge) */
 function stopU(m: RealMap, e: Edge, dir: 1 | -1) {
   const j = endJ(m, e, dir)
-  if (j.ends.length >= 3) return Math.max(1, e.len - (j.r + 1.2))
+  if (j.ends.length >= 3) return Math.max(1, e.len - stopDist(j, e.id))
   if (j.ends.length === 1) return Math.max(1, e.len - (j.bulb ? j.bulb * 0.35 : 3))
   return e.len
 }
 /** where a car joins an edge after a junction */
 function startU(m: RealMap, e: Edge, dir: 1 | -1) {
   const j = startJ(m, e, dir)
-  if (j.ends.length >= 3) return Math.min(e.len - 1, j.r + 1.2)
+  if (j.ends.length >= 3) return Math.min(e.len - 1, stopDist(j, e.id))
   if (j.ends.length === 1) return Math.min(e.len - 1, j.bulb ? j.bulb * 0.35 : 3)
   return 0
 }

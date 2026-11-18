@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { gasTapFn, recentreView, setMotionLook, setTiltSteer, steerTap } from '../game/input'
-import { MODES, type Mode } from '../game/nav'
-import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, cruiseStep, toggleCruise, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal } from '../game/sim'
+import { MODES, type Mode, fmtDist } from '../game/nav'
+import { TRAFFIC_CITY, TRAFFIC_RES, adjustMirror, cruiseStep, toggleCruise, goMenu, input, pauseGame, resumeGame, startGame, toggleSignal, realAhead } from '../game/sim'
 import type { RbDiag, RbPath } from '../game/store'
 import { HW_TOTAL } from '../highway/traffic'
 import { VIEW0, type ViewOffset, setSteerMode, setMirrorLite, setGraphics, setViewOffset, setLookMode, setMode, setMotionSens, setSteerSens, setTraffic, setUnits, useGame } from '../game/store'
@@ -531,6 +531,46 @@ function RbDiagram({ diag }: { diag: RbDiag }) {
   )
 }
 
+/**
+ * Real places: what is at the end of your road (traffic lights, a STOP or a YIELD sign) and how far, from about 150 m out. For
+ * lights it shows the lamp lit now, so you can always tell, even when the lights themselves are small on the screen.
+ */
+function AheadPanel() {
+  const units = useGame((s) => s.units)
+  const [a, setA] = useState({ ...realAhead })
+  useEffect(() => {
+    const id = window.setInterval(() => setA((cur) => (cur.kind === realAhead.kind && cur.light === realAhead.light && Math.abs(cur.dist - realAhead.dist) < 2 && cur.allWay === realAhead.allWay ? cur : { ...realAhead })), 120)
+    return () => window.clearInterval(id)
+  }, [])
+  if (!a.kind) return null
+  const dist = fmtDist(a.dist, units)
+  return (
+    <div className="ahead" role="status" aria-label={a.kind === 'signal' ? `Traffic light ahead: ${a.light === 'R' ? 'red' : a.light === 'Y' ? 'amber' : 'green'}, ${dist}` : `${a.kind === 'stop' ? 'STOP' : 'YIELD'} sign ahead, ${dist}`}>
+      {a.kind === 'signal' ? (
+        <svg viewBox="0 0 30 74" width="22" height="54" aria-hidden="true">
+          <rect x="1" y="1" width="28" height="72" rx="6" fill="#16181c" stroke="#e8c21a" strokeWidth="2" />
+          <circle cx="15" cy="15" r="8.5" fill={a.light === 'R' ? '#ff3b2a' : '#3a1512'} />
+          <circle cx="15" cy="37" r="8.5" fill={a.light === 'Y' ? '#ffb300' : '#3a3112'} />
+          <circle cx="15" cy="59" r="8.5" fill={a.light === 'G' ? '#22e06b' : '#123a1f'} />
+        </svg>
+      ) : a.kind === 'stop' ? (
+        <svg viewBox="0 0 40 40" width="40" height="40" aria-hidden="true">
+          <path d="M12 1h16l11 11v16L28 39H12L1 28V12z" fill="#fff" /><path d="M12.6 2.5h14.8l10.1 10.1v14.8L27.4 37.5H12.6L2.5 27.4V12.6z" fill="#c4161c" />
+          <text x="20" y="24.5" textAnchor="middle" fontSize="11" fontWeight="800" fill="#fff" fontFamily="Arial, sans-serif">STOP</text>
+        </svg>
+      ) : (
+        <svg viewBox="0 0 44 40" width="44" height="40" aria-hidden="true">
+          <path d="M2 3h40L22 38z" fill="#c4161c" /><path d="M9 7h26L22 30z" fill="#fff" />
+        </svg>
+      )}
+      <div>
+        <b>{a.kind === 'signal' ? (a.light === 'R' ? 'Red light' : a.light === 'Y' ? 'Amber light' : 'Green light') : a.kind === 'stop' ? (a.allWay ? 'All-way STOP' : 'STOP') : 'YIELD'}</b>
+        <span>{a.dist < 3 ? 'at the line' : dist}</span>
+      </div>
+    </div>
+  )
+}
+
 function PlayingHud() {
   const hud = useGame((s) => s.hud)
   const messages = useGame((s) => s.messages)
@@ -561,6 +601,7 @@ function PlayingHud() {
       </div>
 
       <MapOverlay />
+      <AheadPanel />
 
       {touch && <TouchControls />}
 

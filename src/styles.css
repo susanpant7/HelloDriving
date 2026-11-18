@@ -617,3 +617,17 @@ button.primary:disabled { opacity: .5; cursor: not-allowed; filter: grayscale(.4
   .mappick { height: 46vh; }
   .pp-search button.secondary { padding-left: 12px; padding-right: 12px; }
 }
+
+/* Real places: the light or sign at the end of your road, and how far */
+.ahead {
+  position: absolute; left: 50%; top: 84px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px 6px 8px; border-radius: 14px; background: rgba(10,13,20,.72); border: 1px solid rgba(255,255,255,.18);
+  color: #fff; pointer-events: none; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.ahead div { display: grid; line-height: 1.15; }
+.ahead b { font-size: 15px; }
+.ahead span { font-size: 13px; color: #cfe0ff; }
+.hud.touch .ahead { top: 64px; padding: 4px 10px 4px 6px; }
+.hud.touch .ahead svg { transform: scale(.8); }
+
+.pp-dir .linkbtn { background: none; border: 0; padding: 0; color: #8ab8ff; font: inherit; text-decoration: underline; cursor: pointer; }

@@ -7,7 +7,7 @@ import { REAL, keepLoadedAround, loadedAt } from '../real/load'
 import { ROUTE, followRoute, resetProgress, routeAt, routeStart } from '../real/route'
 import { initRealTraffic, stepRealTraffic } from '../real/realTraffic'
 import { lightFor } from '../real/signals'
-import { FILLET, junctionsNear, laneOffsets, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
+import { FILLET, junctionsNear, laneOffsets, stopDist, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
 import { HW, CITY, MIXED_ROAD, NL, firstStage, hwRoute, SPAWN_Z, forkCurve, ACC_LEN, hC, toRoadX, toWorldX, forkShift, laneAt, makeStage, nearestLane, rampHeading, rampNear, rampX, type Ramp, rampU, routeName, splitX, unshiftX, onRoadW as hwOnRoad, recoverPose, startPose, type Route, type Stage } from '../highway/layout'
 import { initHighwayTraffic, resetJoins, setHighwayCount, shiftHighwayTraffic, stepHighwayTraffic, unwarpAll, warpAll } from '../highway/traffic'
 import { initialHud, useGame, type Look, type Msg, type Signal } from './store'
@@ -419,6 +419,8 @@ const swap = { dir: 0, lat: 0, t: 0 }
 const realStop = { key: '', minV: 99, prevD: Infinity, done: false, creditRed: false, red: null as null | { j: number; h: number; t: number; stopped: boolean } }
 /** real places: when the map round the car was last topped up, and whether the car is waiting for the map ahead to arrive */
 const realLoad = { t: 0, waiting: false, toldT: -99 }
+/** real places: the next light or sign on your road (shown in a small panel as you come up to it) */
+export const realAhead = { kind: '' as '' | 'signal' | 'stop' | 'yield', light: '' as '' | 'R' | 'Y' | 'G', dist: 0, allWay: false }
 /** real places, lanes: how long you have been on the wrong side / the wrong way, the lane you are in, when the indicator was last on */
 const realLane = { wrongT: 0, wrongWayT: 0, toldT: -99, edge: -1, dir: 0, lane: -1, sigDir: 0, sigT: -99 }
 function startSwap(dir: -1 | 1) {
@@ -1464,7 +1466,10 @@ function realStart() {
   if (!m) return { x: 0, z: 0, h: 0 }
   resetProgress()
   const rs = routeStart()
-  return rs ? realPose(m, rs.x, rs.z, rs.h) : realPose(m, m.focus.x, m.focus.z)
+  if (rs) return realPose(m, rs.x, rs.z, rs.h)
+  // the way you chose for the car on the map (a compass bearing: the game's heading is minus the bearing)
+  const b = REAL.place?.heading
+  return realPose(m, m.focus.x, m.focus.z, b === undefined ? undefined : (-b * Math.PI) / 180)
 }
 /** the banner: the next instruction on the way to your destination; on a free drive, the street you are on */
 function realNav(dt: number) {
@@ -1499,6 +1504,7 @@ function trackRealStop() {
       else say(rr.stopped ? 'You went through a red light: only a right turn is allowed on red, after stopping' : 'You ran a red light', 'warn')
     }
   }
+  realAhead.kind = ''
   if (sim.dir < 0) return // (backing up)
   const r = roadAt(m, sim.x, sim.z)
   if (!r) return
@@ -1507,9 +1513,14 @@ function trackRealStop() {
   const toB = along > 0
   const j = m.junctions[toB ? r.e.b : r.e.a]
   const ctl = j.ctl.get(r.e.id)
+  const dLine = (toB ? r.e.len - r.s : r.s) - stopDist(j, r.e.id) // how far the stop line is ahead
+  // (the panel: what is at the end of this road, from 150 m away until you are at the line)
+  if ((ctl === 'stop' || ctl === 'signal' || ctl === 'yield') && dLine < 150 && dLine > -1.5) {
+    realAhead.kind = ctl; realAhead.dist = Math.max(0, dLine); realAhead.allWay = j.allWay
+    realAhead.light = ctl === 'signal' ? lightFor(m, j, r.e.id, sim.t) ?? '' : ''
+  }
   if (ctl !== 'stop' && ctl !== 'signal') { realStop.key = ''; return }
   const key = `${r.e.id}:${toB}`
-  const dLine = (toB ? r.e.len - r.s : r.s) - (j.r + 1.2) // how far the stop line is ahead
   if (realStop.key !== key) { realStop.key = key; realStop.minV = 99; realStop.prevD = dLine; realStop.done = false; realStop.creditRed = false }
   if (dLine < 15 && dLine > -3) realStop.minV = Math.min(realStop.minV, sim.speed)
   if (ctl === 'signal') {

@@ -66,7 +66,7 @@ export async function planRoute() {
   if (!a || !b) { setStatus('none'); return }
   setStatus('loading', 'Planning the route…')
   try {
-    const r = await osrm(a, b)
+    const r = await osrm(a, b, a.heading) // (setting off the way you chose for the car, if you did)
     if (id !== planId) return
     ROUTE.route = r
     resetProgress()

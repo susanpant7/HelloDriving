@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { sim } from '../game/sim'
 import { useGame } from '../game/store'
 import { REAL } from './load'
-import { endDir, halfWidth, laneOffsets, onRealRoad } from './roads'
+import { endDir, halfWidth, laneOffsets, onRealRoad, stopDist } from './roads'
 import { lightOf, signalOf, type Controller } from './signals'
 
 /**
@@ -15,8 +15,9 @@ import { lightOf, signalOf, type Controller } from './signals'
 interface Head { x: number; y: number; z: number; yaw: number; ctl: Controller; axis: 0 | 1 }
 
 const LIT = [new THREE.Color('#ff2a1a'), new THREE.Color('#ffb300'), new THREE.Color('#22e06b')]
+const BLACK = new THREE.Color('#000000')
 const DARK = [new THREE.Color('#2b0e0c'), new THREE.Color('#2b230c'), new THREE.Color('#0c2614')]
-const POLE = new THREE.Color('#5d6168'), HOUSING = new THREE.Color('#2a2c30')
+const POLE = new THREE.Color('#5d6168'), HOUSING = new THREE.Color('#2a2c30'), PLATE = new THREE.Color('#141518'), PLATE_EDGE = new THREE.Color('#e8c21a')
 
 function build() {
   const m = REAL.map
@@ -45,27 +46,30 @@ function build() {
       const lats = laneOffsets(e, dirArr).map((o) => o * dirArr) // lane centres, to the right of travel
       if (!lats.length) continue
       const yaw = Math.atan2(d[0], d[1]) // (the head's front faces the arriving drivers)
-      // the far corner, across the junction
-      const fx = j.x + tx * (j.r + 1.5), fz = j.z + tz * (j.r + 1.5)
-      let px = fx + rx * (right + 1.6), pz = fz + rz * (right + 1.6)
+      const stop = stopDist(j, ei)
+      /** a signal head: a black backplate with a yellow border (as in Texas), the housing, and its three lamps */
+      const head = (hx: number, hy: number, hz: number) => {
+        box(0.86, 1.86, 0.04, hx - d[0] * 0.02, hy, hz - d[1] * 0.02, yaw, PLATE_EDGE)
+        box(0.76, 1.76, 0.05, hx, hy, hz, yaw, PLATE)
+        box(0.5, 1.45, 0.34, hx + d[0] * 0.18, hy, hz + d[1] * 0.18, yaw, HOUSING)
+        heads.push({ x: hx + d[0] * 0.36, y: hy, z: hz + d[1] * 0.36, yaw, ctl: sg.ctl, axis: sg.axis })
+      }
+      // the far corner, across the junction: a pole with a mast arm, one head over each lane
+      const fx = j.x + tx * (stop - 0.5), fz = j.z + tz * (stop - 0.5)
+      const px = fx + rx * (right + 1.6), pz = fz + rz * (right + 1.6)
       if (!onRealRoad(m, px, pz, 0.3)) {
-        const H = 6.3
-        box(0.24, H, 0.24, px, H / 2, pz, yaw, POLE)
+        const H = 6.4
+        box(0.26, H, 0.26, px, H / 2, pz, yaw, POLE)
         const far = Math.min(...lats)
-        const armLen = right + 1.6 - far + 0.4
-        box(armLen, 0.16, 0.16, px - rx * armLen / 2, H - 0.25, pz - rz * armLen / 2, Math.atan2(-rz, rx), POLE) // (the arm's length turned to run across the road)
-        for (const l of lats) {
-          const hx = fx + rx * l, hz = fz + rz * l
-          box(0.4, 1.1, 0.3, hx, H - 0.95, hz, yaw, HOUSING)
-          heads.push({ x: hx + d[0] * 0.17, y: H - 0.95, z: hz + d[1] * 0.17, yaw, ctl: sg.ctl, axis: sg.axis })
-        }
-      } else {
-        // the near corner, by the stop line
-        px = j.x + d[0] * (j.r + 1.4) + rx * (right + 1.3); pz = j.z + d[1] * (j.r + 1.4) + rz * (right + 1.3)
-        if (onRealRoad(m, px, pz, 0.3)) continue
-        box(0.2, 3.6, 0.2, px, 1.8, pz, yaw, POLE)
-        box(0.4, 1.1, 0.3, px, 3.6, pz, yaw, HOUSING)
-        heads.push({ x: px + d[0] * 0.17, y: 3.6, z: pz + d[1] * 0.17, yaw, ctl: sg.ctl, axis: sg.axis })
+        const armLen = right + 1.6 - far + 0.5
+        box(armLen, 0.18, 0.18, px - rx * armLen / 2, H - 0.2, pz - rz * armLen / 2, Math.atan2(-rz, rx), POLE) // (the arm's length turned to run across the road)
+        for (const l of lats) head(fx + rx * l, H - 1.15, fz + rz * l)
+      }
+      // and the near corner, by the stop line: a head on a pole at eye height, which you can see when stopped close to the line
+      const nx = j.x + d[0] * (stop + 0.6) + rx * (right + 1.2), nz = j.z + d[1] * (stop + 0.6) + rz * (right + 1.2)
+      if (!onRealRoad(m, nx, nz, 0.3)) {
+        box(0.2, 3.3, 0.2, nx, 1.65, nz, yaw, POLE)
+        head(nx, 3.3, nz)
       }
     }
   }
@@ -97,42 +101,54 @@ export function RealLights() {
   const mats = useMemo(() => ({
     frame: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.3 }),
     lamp: new THREE.MeshBasicMaterial({ toneMapped: false }),
-    disc: new THREE.CircleGeometry(0.13, 14),
+    // the glow round a lit lamp (added light: a dark lamp adds nothing)
+    glow: new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }),
+    disc: new THREE.CircleGeometry(0.17, 18),
+    halo: new THREE.CircleGeometry(0.62, 24),
   }), [])
-  const lamps = useMemo(() => {
-    const im = new THREE.InstancedMesh(mats.disc, mats.lamp, Math.max(1, data.heads.length * 3))
+  const SPACING = 0.44
+  const make = (geo: THREE.BufferGeometry, mat: THREE.Material, ahead: number) => {
+    const im = new THREE.InstancedMesh(geo, mat, Math.max(1, data.heads.length * 3))
     const mt = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(1, 1, 1)
     data.heads.forEach((h, i) => {
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), h.yaw)
+      const fx = Math.sin(h.yaw) * ahead, fz = Math.cos(h.yaw) * ahead
       for (let k = 0; k < 3; k++) {
-        mt.compose(p.set(h.x, h.y + 0.34 - k * 0.34, h.z), q, s)
+        mt.compose(p.set(h.x + fx, h.y + SPACING - k * SPACING, h.z + fz), q, s)
         im.setMatrixAt(i * 3 + k, mt)
-        im.setColorAt(i * 3 + k, DARK[k])
+        im.setColorAt(i * 3 + k, BLACK)
       }
     })
     im.count = data.heads.length * 3
     im.computeBoundingSphere()
     return im
-  }, [data, mats])
-  useEffect(() => () => { data.geo?.dispose(); lamps.dispose() }, [data, lamps])
-  useEffect(() => () => { mats.frame.dispose(); mats.lamp.dispose(); mats.disc.dispose() }, [mats])
+  }
+  const lamps = useMemo(() => make(mats.disc, mats.lamp, 0), [data, mats])
+  const glows = useMemo(() => { const g = make(mats.halo, mats.glow, 0.03); g.renderOrder = 2; return g }, [data, mats])
+  useEffect(() => () => { data.geo?.dispose(); lamps.dispose(); glows.dispose() }, [data, lamps, glows])
+  useEffect(() => () => { Object.values(mats).forEach((v) => v.dispose()) }, [mats])
 
-  // light the lamps (red top, amber middle, green bottom)
+  // light the lamps (red top, amber middle, green bottom), with a glow round the lit one
   useFrame(() => {
     const hs = data.heads
-    if (!hs.length || !lamps.instanceColor) return
+    if (!hs.length || !lamps.instanceColor || !glows.instanceColor) return
     for (let i = 0; i < hs.length; i++) {
       const L = lightOf(hs[i].ctl, hs[i].axis, sim.t)
       const on = L === 'R' ? 0 : L === 'Y' ? 1 : 2
-      for (let k = 0; k < 3; k++) lamps.setColorAt(i * 3 + k, k === on ? LIT[k] : DARK[k])
+      for (let k = 0; k < 3; k++) {
+        lamps.setColorAt(i * 3 + k, k === on ? LIT[k] : DARK[k])
+        glows.setColorAt(i * 3 + k, k === on ? LIT[k] : BLACK)
+      }
     }
     lamps.instanceColor.needsUpdate = true
+    glows.instanceColor.needsUpdate = true
   })
 
   return (
     <group>
       {data.geo && <mesh geometry={data.geo} material={mats.frame} />}
       <primitive object={lamps} />
+      <primitive object={glows} />
     </group>
   )
 }
