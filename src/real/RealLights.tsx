@@ -59,17 +59,17 @@ function build() {
       const px = fx + rx * (right + 1.6), pz = fz + rz * (right + 1.6)
       if (!onRealRoad(m, px, pz, 0.3)) {
         const H = 6.4
-        box(0.26, H, 0.26, px, H / 2, pz, yaw, POLE)
+        box(0.26, H, 0.26, px, H / 2 + j.y, pz, yaw, POLE)
         const far = Math.min(...lats)
         const armLen = right + 1.6 - far + 0.5
-        box(armLen, 0.18, 0.18, px - rx * armLen / 2, H - 0.2, pz - rz * armLen / 2, Math.atan2(-rz, rx), POLE) // (the arm's length turned to run across the road)
-        for (const l of lats) head(fx + rx * l, H - 1.15, fz + rz * l)
+        box(armLen, 0.18, 0.18, px - rx * armLen / 2, H - 0.2 + j.y, pz - rz * armLen / 2, Math.atan2(-rz, rx), POLE) // (the arm's length turned to run across the road)
+        for (const l of lats) head(fx + rx * l, H - 1.15 + j.y, fz + rz * l)
       }
       // and the near corner, by the stop line: a head on a pole at eye height, which you can see when stopped close to the line
       const nx = j.x + d[0] * (stop + 0.6) + rx * (right + 1.2), nz = j.z + d[1] * (stop + 0.6) + rz * (right + 1.2)
       if (!onRealRoad(m, nx, nz, 0.3)) {
-        box(0.2, 3.3, 0.2, nx, 1.65, nz, yaw, POLE)
-        head(nx, 3.3, nz)
+        box(0.2, 3.3, 0.2, nx, 1.65 + j.y, nz, yaw, POLE)
+        head(nx, 3.3 + j.y, nz)
       }
     }
   }

@@ -10,7 +10,7 @@
 import { cars, CAR_L } from '../game/trafficAI'
 import { useGame } from '../game/store'
 import { REAL } from './load'
-import { endDir, headingOf, laneOffsets, nearEdges, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
+import { endDir, headingOf, heightAt, laneOffsets, nearEdges, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
 import { lightFor } from './signals'
 
 /** how many cars round you, by traffic level (1-5) */
@@ -19,9 +19,9 @@ const MAXN = 40
 const COLORS = ['#2e86de', '#f1c40f', '#ecf0f1', '#27ae60', '#8e44ad', '#e67e22', '#34495e', '#16a085', '#c0392b', '#95a5a6', '#1b1f24', '#d4c9b0']
 const KINDS = [0, 0, 0, 0, 1, 1, 3, 4]
 
-export interface Player { x: number; z: number; h: number; speed: number; dir: 1 | -1 }
+export interface Player { x: number; z: number; h: number; speed: number; dir: 1 | -1; y: number }
 
-interface Through { j: number; p: number[]; len: number; d: number; turn: number; fromE: number; fromDir: 1 | -1 }
+interface Through { j: number; p: number[]; len: number; d: number; turn: number; fromE: number; fromDir: 1 | -1; y0: number; y1: number }
 interface RC {
   on: boolean
   /** the edge, which way along it (1: a -> b), the lane (0 = leftmost), distance travelled along it (m), sideways offset now (m) */
@@ -69,15 +69,22 @@ function laneOff(e: Edge, dir: 1 | -1, lane: number) {
 }
 /** position and travel direction on an edge */
 function onEdge(e: Edge, dir: 1 | -1, u: number, lat: number) {
-  const [px, pz, dx, dz] = pointAt(e, dir === 1 ? u : e.len - u)
-  return { x: px - dz * lat, z: pz + dx * lat, fx: dx * dir, fz: dz * dir }
+  const s = dir === 1 ? u : e.len - u
+  const [px, pz, dx, dz] = pointAt(e, s)
+  return { x: px - dz * lat, z: pz + dx * lat, fx: dx * dir, fz: dz * dir, y: heightAt(e, s) }
 }
 function bez(p: number[], t: number) {
   const a = (1 - t) * (1 - t), b = 2 * t * (1 - t), c = t * t
   const x = a * p[0] + b * p[2] + c * p[4], z = a * p[1] + b * p[3] + c * p[5]
   const dx = 2 * (1 - t) * (p[2] - p[0]) + 2 * t * (p[4] - p[2]), dz = 2 * (1 - t) * (p[3] - p[1]) + 2 * t * (p[5] - p[3])
   const L = Math.hypot(dx, dz) || 1
-  return { x, z, fx: dx / L, fz: dz / L }
+  return { x, z, fx: dx / L, fz: dz / L, y: 0 }
+}
+/** where a car driving through a junction is (with the height from one road to the other) */
+function onCurve(tr: Through) {
+  const t = Math.min(1, tr.d / tr.len), q = bez(tr.p, t)
+  q.y = tr.y0 + (tr.y1 - tr.y0) * t
+  return q
 }
 
 /* ---------------- choosing the way ---------------- */
@@ -146,7 +153,7 @@ function through(m: RealMap, c: RC): Through | null {
   const p = [a.x, a.z, px, pz, b.x, b.z]
   let len = 0, prev = bez(p, 0)
   for (let i = 1; i <= 10; i++) { const q = bez(p, i / 10); len += Math.hypot(q.x - prev.x, q.z - prev.z); prev = q }
-  return { j: j.id, p, len: Math.max(0.5, len), d: 0, turn: nx.turn, fromE: c.e, fromDir: c.dir }
+  return { j: j.id, p, len: Math.max(0.5, len), d: 0, turn: nx.turn, fromE: c.e, fromDir: c.dir, y0: a.y, y1: b.y }
 }
 
 /* ---------------- spawning ---------------- */
@@ -198,7 +205,7 @@ function reanchor(m: RealMap) {
     const car = cars[i]
     const fx = -Math.sin(car.h), fz = -Math.cos(car.h)
     let best: ReturnType<typeof nearEdges>[number] | null = null
-    for (const n of nearEdges(m, car.x, car.z, 8)) if (Math.abs(n.dx * fx + n.dz * fz) > 0.6) { best = n; break }
+    for (const n of nearEdges(m, car.x, car.z, 8, car.y ?? 0)) if (Math.abs(n.dx * fx + n.dz * fz) > 0.6) { best = n; break }
     if (!best) { c.on = false; return }
     const dir: 1 | -1 = best.dx * fx + best.dz * fz > 0 ? 1 : -1
     const offs = laneOffsets(best.e, dir)
@@ -210,8 +217,8 @@ function reanchor(m: RealMap) {
 }
 
 /* ---------------- each step ---------------- */
-interface Pos { x: number; z: number; fx: number; fz: number }
-const pos: Pos[] = rc.map(() => ({ x: 0, z: 0, fx: 0, fz: -1 }))
+interface Pos { x: number; z: number; fx: number; fz: number; y: number }
+const pos: Pos[] = rc.map(() => ({ x: 0, z: 0, fx: 0, fz: -1, y: 0 }))
 
 /** may this car drive into the junction now? */
 function mayEnter(m: RealMap, c: RC, i: number, j: Junction, t: number, p: Player, dToLine: number): boolean {
@@ -232,7 +239,7 @@ function mayEnter(m: RealMap, c: RC, i: number, j: Junction, t: number, p: Playe
   // or about to drive through it
   const busy = rc.some((o, k) => k !== i && o.on && ((o.tr && o.tr.j === j.id && o.tr.fromE !== c.e) || (ctl === 'stop' && !o.tr && o.stoppedAt >= 0 && !o.released && o.stoppedAt < c.stoppedAt && endJ(m, m.edges[o.e], o.dir) === j)))
   if (busy) return false
-  const pd = Math.hypot(p.x - j.x, p.z - j.z)
+  const pd = Math.abs(p.y - j.y) > 3.5 ? Infinity : Math.hypot(p.x - j.x, p.z - j.z) // (you on a road over or under this junction: not in it)
   if (pd < j.r + 2) return false
   if (pd < j.r + 30 && p.speed > 2) {
     const toward = ((j.x - p.x) * -Math.sin(p.h) + (j.z - p.z) * -Math.cos(p.h)) * p.dir > 0
@@ -257,7 +264,7 @@ export function stepRealTraffic(dt: number, t: number, p: Player) {
   if (m !== ofMap) { ofMap = m; reanchor(m) }
   const want = Math.min(MAXN, REAL_TRAFFIC[useGame.getState().traffic - 1] ?? 12)
   // current positions (for the distance checks)
-  rc.forEach((c, i) => { if (c.on) Object.assign(pos[i], c.tr ? bez(c.tr.p, Math.min(1, c.tr.d / c.tr.len)) : onEdge(m.edges[c.e], c.dir, c.u, c.lat)) })
+  rc.forEach((c, i) => { if (c.on) Object.assign(pos[i], c.tr ? onCurve(c.tr) : onEdge(m.edges[c.e], c.dir, c.u, c.lat)) })
   const pfx = -Math.sin(p.h) * p.dir, pfz = -Math.cos(p.h) * p.dir
 
   let active = 0
@@ -323,12 +330,12 @@ export function stepRealTraffic(dt: number, t: number, p: Player) {
 
     // anything just ahead (another car crossing, or you): look in a narrow band in front
     for (let k = 0; k < rc.length; k++) {
-      if (k === i || !rc[k].on) continue
+      if (k === i || !rc[k].on || Math.abs(pos[k].y - P.y) > 3) continue // (a car on a bridge above, or the road below, is not in the way)
       const rx = pos[k].x - P.x, rz = pos[k].z - P.z
       const f = rx * P.fx + rz * P.fz, l = Math.abs(rx * -P.fz + rz * P.fx)
       if (f > 0 && f < 28 && l < 2.1) lead(f - CAR_L - 0.8, rc[k].v * (pos[k].fx * P.fx + pos[k].fz * P.fz))
     }
-    {
+    if (Math.abs(p.y - P.y) < 3) {
       const rx = p.x - P.x, rz = p.z - P.z
       const f = rx * P.fx + rz * P.fz, l = Math.abs(rx * -P.fz + rz * P.fx)
       if (f > 0 && f < 55 && l < 2.3) lead(f - CAR_L - 1, p.speed * (pfx * P.fx + pfz * P.fz))
@@ -373,9 +380,9 @@ function write(m: RealMap) {
     const car = cars[i]
     const c = rc[i]
     if (!c || !c.on) { if (i < MAXN) car.active = false; continue }
-    const q = c.tr ? bez(c.tr.p, Math.min(1, c.tr.d / c.tr.len)) : onEdge(m.edges[c.e], c.dir, c.u, c.lat)
+    const q = c.tr ? onCurve(c.tr) : onEdge(m.edges[c.e], c.dir, c.u, c.lat)
     car.active = true
-    car.x = q.x; car.z = q.z
+    car.x = q.x; car.z = q.z; car.y = q.y
     car.h = headingOf(q.fx, q.fz)
     car.speed = c.v
     car.braking = c.acc < -1 || (c.v < 0.5 && !c.tr)

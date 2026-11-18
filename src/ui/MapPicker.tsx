@@ -12,6 +12,8 @@ interface Props {
   dest?: { lat: number; lon: number } | null
   /** which way the car will face at the start (compass degrees), drawn as an arrow from the start pin */
   heading?: number | null
+  /** where the car was put (Position car): drawn as a blue car arrow */
+  car?: { lat: number; lon: number; heading: number } | null
   route?: Array<[number, number]> | null
   /** the downloaded driving tiles ("i,j" of 0.01 degree tiles) */
   tiles: string[]
@@ -28,11 +30,11 @@ const latOf = (y: number, z: number) => { const n = Math.PI - (2 * Math.PI * y) 
 /** map pictures, shared by every map on the page */
 const imgs = new Map<string, HTMLImageElement>()
 
-export function MapPicker({ center, marker, heading = null, dest = null, route = null, tiles, onPick }: Props) {
+export function MapPicker({ center, marker, heading = null, dest = null, route = null, car = null, tiles, onPick }: Props) {
   const cv = useRef<HTMLCanvasElement>(null)
   const view = useRef({ lat: 39.5, lon: -98.35, z: 4 }) // (the whole of the US, until a place is known)
-  const props = useRef({ marker, heading, dest, route, tiles, onPick })
-  props.current = { marker, heading, dest, route, tiles, onPick }
+  const props = useRef({ marker, heading, dest, route, car, tiles, onPick })
+  props.current = { marker, heading, dest, route, car, tiles, onPick }
   const drawRef = useRef<() => void>(() => {})
   const zoomRef = useRef<(dz: number) => void>(() => {})
 
@@ -42,7 +44,7 @@ export function MapPicker({ center, marker, heading = null, dest = null, route =
     view.current = { lat: center.lat, lon: center.lon, z: center.zoom ?? Math.max(view.current.z, 16) }
     drawRef.current()
   }, [center?.lat, center?.lon, center?.zoom])
-  useEffect(() => { drawRef.current() }, [marker?.lat, marker?.lon, heading, dest?.lat, dest?.lon, route, tiles.join(';')])
+  useEffect(() => { drawRef.current() }, [marker?.lat, marker?.lon, heading, dest?.lat, dest?.lon, route, car?.lat, car?.lon, car?.heading, tiles.join(';')])
 
   useEffect(() => {
     const c = cv.current!
@@ -119,6 +121,15 @@ export function MapPicker({ center, marker, heading = null, dest = null, route =
             g.beginPath(); g.moveTo(tx, ty); g.lineTo(tx - ux * 16 - uy * 9, ty - uy * 16 + ux * 9); g.lineTo(tx - ux * 16 + uy * 9, ty - uy * 16 - ux * 9); g.closePath(); g.fill(); g.stroke()
           }
           pin(mk.lat, mk.lon, '#16a34a', 'A')
+        }
+        // the car, where Position car put it: a blue arrow pointing the way it faces
+        const cr = props.current.car
+        if (cr) {
+          const [x, y] = P(cr.lat, cr.lon)
+          g.save(); g.translate(x, y); g.rotate((cr.heading * Math.PI) / 180)
+          g.fillStyle = '#0b5cff'; g.strokeStyle = '#fff'; g.lineWidth = 2.5
+          g.beginPath(); g.moveTo(0, -16); g.lineTo(11, 12); g.lineTo(0, 6); g.lineTo(-11, 12); g.closePath(); g.fill(); g.stroke()
+          g.restore()
         }
       })
     }

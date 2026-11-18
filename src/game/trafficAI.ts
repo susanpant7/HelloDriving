@@ -19,6 +19,8 @@ export interface AiCar {
   x: number // wrapped into [0, P)
   z: number
   h: number // heading (rad, same convention as the player: forward = (-sin h, -cos h))
+  /** height of the road under it (m): real places, on a bridge or overpass; 0 (or unset) on the ground */
+  y?: number
   color: string
   stuck: number
   ghost: number

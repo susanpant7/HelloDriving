@@ -7,7 +7,7 @@ import { REAL, keepLoadedAround, loadedAt } from '../real/load'
 import { ROUTE, followRoute, resetProgress, routeAt, routeStart } from '../real/route'
 import { initRealTraffic, stepRealTraffic } from '../real/realTraffic'
 import { lightFor } from '../real/signals'
-import { FILLET, junctionsNear, laneOffsets, stopDist, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
+import { FILLET, junctionsNear, laneOffsets, stopDist, surfaceAt, onRealRoad, realLaneTarget, realPose, roadAt } from '../real/roads'
 import { HW, CITY, MIXED_ROAD, NL, firstStage, hwRoute, SPAWN_Z, forkCurve, ACC_LEN, hC, toRoadX, toWorldX, forkShift, laneAt, makeStage, nearestLane, rampHeading, rampNear, rampX, type Ramp, rampU, routeName, splitX, unshiftX, onRoadW as hwOnRoad, recoverPose, startPose, type Route, type Stage } from '../highway/layout'
 import { initHighwayTraffic, resetJoins, setHighwayCount, shiftHighwayTraffic, stepHighwayTraffic, unwarpAll, warpAll } from '../highway/traffic'
 import { initialHud, useGame, type Look, type Msg, type Signal } from './store'
@@ -117,6 +117,8 @@ export const sim = {
   gear: 1,
   /** which way the car drives: 1 forward (D), -1 reverse (R). `speed` is always the size of the speed. */
   dir: 1 as 1 | -1,
+  /** how high the road under the car is (m): 0 on the ground, up on a bridge or overpass (real places) */
+  y: 0,
   tickT: 0,
   signal: 0 as Signal,
   signalSince: 0,
@@ -487,7 +489,7 @@ export function resetSim(keepScore = false, stage?: Stage) {
   // where the drive starts: the highway's on-ramp, the place you searched for, or the practice route's start
   const pose = WORLD.highway ? startPose() : WORLD.real ? realStart() : startRoute(useGame.getState().mode)
   Object.assign(sim, {
-    t: 0, x: pose.x, z: pose.z, h: pose.h, speed: 0, thr: 0, brk: 0, steerIn: 0, steer: 0, rpm: 900, gear: 1, dir: 1, tickT: 0,
+    t: 0, x: pose.x, z: pose.z, y: WORLD.real && REAL.map ? (REAL.startAt ? REAL.startAt.y : surfaceAt(REAL.map, pose.x, pose.z, 0)) : 0, h: pose.h, speed: 0, thr: 0, brk: 0, steerIn: 0, steer: 0, rpm: 900, gear: 1, dir: 1, tickT: 0,
     signal: 0, signalSince: 0, look: 'front', lookSince: 0, lastCheck: { left: -99, center: -99, right: -99 }, lastBlind: { left: -99, right: -99 },
     score: keep, changes: 0, clean: 0, crashT: 0, hudTimer: 0, man: null, jn: null, stop: null,
     warnT: { off: -99, centre: -99, wrong: -99, speed: -99 }, speedingFor: 0, trip: 0, offRoadT: 0, errors: 0, yawRate: 0, head: { yaw: 0, pitch: 0 }, wheel: 0, cruise: 0, rbl: { node: -1, lane: -1 },
@@ -498,7 +500,7 @@ export function resetSim(keepScore = false, stage?: Stage) {
   input.free = false
   input.yaw = input.pitch = 0
   if (WORLD.highway) { setHighwayCount(useGame.getState().traffic); initHighwayTraffic(pose.z, pose.x); resetJoins() }
-  else if (WORLD.real) initRealTraffic({ x: pose.x, z: pose.z, h: pose.h, speed: 0, dir: 1 })
+  else if (WORLD.real) initRealTraffic({ x: pose.x, z: pose.z, h: pose.h, speed: 0, dir: 1, y: sim.y })
   else initTraffic()
   applyTraffic()
 }
@@ -575,7 +577,7 @@ export function resumeGame() {
 function recoverToRoad() {
   if (WORLD.real) {
     if (!REAL.map) return
-    const p = realPose(REAL.map, sim.x, sim.z, sim.h)
+    const p = realPose(REAL.map, sim.x, sim.z, sim.h, sim.y)
     Object.assign(sim, { x: p.x, z: p.z, h: p.h, speed: 0, dir: 1, thr: 0, brk: 0, steerIn: 0, steer: 0, signal: 0, man: null, jn: null, stop: null, offRoadT: 0, yawRate: 0 })
     realStop.key = ''
     return
@@ -664,7 +666,9 @@ export function stepSim(dt: number) {
   sim.t += dt
 
   // (a real place: where its map has not arrived yet, nothing counts as off the road; the car waits for it instead)
-  const onRoad = WORLD.highway ? hwOnRoad(sim.x, sim.z) : WORLD.real ? !REAL.map || !loadedAt(sim.x, sim.z) || onRealRoad(REAL.map, sim.x, sim.z) : onAsphalt(sim.x, sim.z)
+  // (a real place: the car drives on the road at its own height, over bridges and under them; another road above or below is not its)
+  if (WORLD.real && REAL.map) { const yT = surfaceAt(REAL.map, sim.x, sim.z, sim.y); sim.y += (yT - sim.y) * Math.min(1, dt * 10) }
+  const onRoad = WORLD.highway ? hwOnRoad(sim.x, sim.z) : WORLD.real ? !REAL.map || !loadedAt(sim.x, sim.z) || onRealRoad(REAL.map, sim.x, sim.z, 1.2, sim.y) : onAsphalt(sim.x, sim.z)
   if (WORLD.real && REAL.map) {
     if ((realLoad.t += dt) > 1) {
       // download the map ahead as you drive: the tile the car is heading into (on a route: the next 500 m of the route)
@@ -929,7 +933,7 @@ export function stepSim(dt: number) {
   // the Mixed course: the amount of traffic follows the district you are driving in (re-checked every couple of seconds)
   if (!WORLD.highway && useGame.getState().mode === 'mixed' && (trafficCheckT += dt) > 2) { trafficCheckT = 0; setTrafficTarget(trafficHere()) }
   if (WORLD.highway) stepHighwayTraffic(dt, sim.t, playerObs())
-  else if (WORLD.real) stepRealTraffic(dt, sim.t, { x: sim.x, z: sim.z, h: sim.h, speed: sim.speed, dir: sim.dir })
+  else if (WORLD.real) stepRealTraffic(dt, sim.t, { x: sim.x, z: sim.z, h: sim.h, speed: sim.speed, dir: sim.dir, y: sim.y })
   else stepTraffic(dt, sim.t, playerObs())
   for (const c of cars) {
     if (c.active && hits(c)) return crashInto(c)
@@ -977,6 +981,7 @@ function updateEngine(dt: number) {
 
 /* ---------- collisions (oriented boxes, separating-axis test) ---------- */
 function hits(c: AiCar) {
+  if (WORLD.real && Math.abs((c.y ?? 0) - sim.y) > 3) return false // (a car on a bridge above you, or on the road under yours)
   const ox = sim.x + wrapD(c.x - sim.x)
   const oz = sim.z + wrapD(c.z - sim.z)
   const dx = ox - sim.x
@@ -1184,7 +1189,7 @@ function finishManeuver(m: Maneuver) {
 
 /** The centre of the lane the car is mostly in (the nearest lane running the way it is heading): a point on it and the lane's heading. */
 function laneTarget(qx = sim.x, qz = sim.z): { x: number; z: number; h: number } | null {
-  if (WORLD.real) return REAL.map ? realLaneTarget(REAL.map, qx, qz, sim.h) : null
+  if (WORLD.real) return REAL.map ? realLaneTarget(REAL.map, qx, qz, sim.h, 9, sim.y) : null
   if (WORLD.highway) {
     const n = nearestLane(toRoadX(qx, qz), qz)
     return { x: toWorldX(n.x, qz), z: qz, h: n.h + hC(qz) }
@@ -1431,8 +1436,8 @@ function trackRealLane(dt: number) {
   if (sim.signal) { L.sigDir = sim.signal; L.sigT = sim.t }
   const reset = () => { L.wrongT = 0; L.wrongWayT = 0; L.edge = -1 }
   if (!m || sim.dir < 0 || sim.speed < 3) { reset(); return }
-  if (junctionsNear(m, sim.x, sim.z).some((j) => j.ends.length >= 3 && Math.hypot(j.x - sim.x, j.z - sim.z) < j.r + FILLET + 2)) { reset(); return }
-  const r = roadAt(m, sim.x, sim.z)
+  if (junctionsNear(m, sim.x, sim.z).some((j) => j.ends.length >= 3 && Math.abs(j.y - sim.y) < 3.5 && Math.hypot(j.x - sim.x, j.z - sim.z) < j.r + FILLET + 2)) { reset(); return }
+  const r = roadAt(m, sim.x, sim.z, sim.y)
   if (!r || r.e.internal) { reset(); return }
   const fwd = r.dx * -Math.sin(sim.h) + r.dz * -Math.cos(sim.h)
   if (Math.abs(fwd) < 0.8) { reset(); return } // (turning, or across the road)
@@ -1459,12 +1464,14 @@ function trackRealLane(dt: number) {
   }
 }
 /** the width of the lane you are in (real places) */
-function realLaneW() { return (REAL.map && realLaneTarget(REAL.map, sim.x, sim.z, sim.h)?.w) || 3.6 }
+function realLaneW() { return (REAL.map && realLaneTarget(REAL.map, sim.x, sim.z, sim.h, 9, sim.y)?.w) || 3.6 }
 /** where a drive in a real place starts: the start of the route (setting off the way it goes), or the place chosen */
 function realStart() {
   const m = REAL.map
   if (!m) return { x: 0, z: 0, h: 0 }
   resetProgress()
+  // where you put the car on the map (Position car) comes first
+  if (REAL.startAt) return { x: REAL.startAt.x, z: REAL.startAt.z, h: REAL.startAt.h }
   const rs = routeStart()
   if (rs) return realPose(m, rs.x, rs.z, rs.h)
   // the way you chose for the car on the map (a compass bearing: the game's heading is minus the bearing)
@@ -1484,7 +1491,7 @@ function realNav(dt: number) {
     else if (r.event === 'reroute-failed') say('Could not find a new route: carry on, it will try again', 'info')
     return
   }
-  const here = roadAt(m, sim.x, sim.z)
+  const here = roadAt(m, sim.x, sim.z, sim.y)
   nav.text = here ? here.e.name || 'Unnamed road' : ''
   nav.sub = 'Free drive'
   nav.icon = 'S'
@@ -1506,7 +1513,7 @@ function trackRealStop() {
   }
   realAhead.kind = ''
   if (sim.dir < 0) return // (backing up)
-  const r = roadAt(m, sim.x, sim.z)
+  const r = roadAt(m, sim.x, sim.z, sim.y)
   if (!r) return
   const along = r.dx * -Math.sin(sim.h) + r.dz * -Math.cos(sim.h)
   if (Math.abs(along) < 0.5) return // (across the road: turning, or crossing a junction)
@@ -1547,8 +1554,8 @@ function currentLimit() {
     // the limit of the road you are on (the last road's limit holds while you cross a junction)
     const m = REAL.map
     if (!m) return streetLim
-    const inJunction = junctionsNear(m, sim.x, sim.z).some((j) => j.ends.length >= 3 && Math.hypot(j.x - sim.x, j.z - sim.z) < j.r + 2)
-    const r = inJunction ? null : roadAt(m, sim.x, sim.z)
+    const inJunction = junctionsNear(m, sim.x, sim.z).some((j) => j.ends.length >= 3 && Math.abs(j.y - sim.y) < 3.5 && Math.hypot(j.x - sim.x, j.z - sim.z) < j.r + 2)
+    const r = inJunction ? null : roadAt(m, sim.x, sim.z, sim.y)
     if (r) streetLim = r.e.limit
     return streetLim
   }

@@ -213,7 +213,7 @@ export function Traffic() {
     let nr = 0
     const now = performance.now()
     // the moving traffic, then the cars parked along residential streets (near you only: they never move)
-    type DrawCar = Pick<AiCar, 'id' | 'x' | 'z' | 'h' | 'speed' | 'kind' | 'color' | 'braking' | 'sig'>
+    type DrawCar = Pick<AiCar, 'id' | 'x' | 'z' | 'y' | 'h' | 'speed' | 'kind' | 'color' | 'braking' | 'sig'>
     const list: DrawCar[] = []
     for (const c of cars) if (c.active) list.push(c)
     for (let q = 0; !WORLD.highway && !WORLD.real && q < PARKED.length && q < MAX_PARKED; q++) { // (the town's parked cars: never on the highway)
@@ -234,7 +234,7 @@ export function Traffic() {
       const dx = wrapD(cx - sim.x)
       const dz = wrapD(cz - sim.z)
       if (dx * dx + dz * dz > 320 * 320) continue
-      _p.set(sim.x + dx, 0, sim.z + dz)
+      _p.set(sim.x + dx, c.y ?? 0, sim.z + dz) // (up on a bridge, in a real place)
       // smooth the car's motion for display: heading follows the road gently, the nose dips when it brakes, the body rolls in a turn
       const mo = motion[c.id]
       const step = Math.min(dt, 0.1) || 1 / 60

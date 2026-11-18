@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { FILLET, arrives, clusterHull, endDir, halfWidth, junctionRing, laneOffsets, onRealRoad, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
+import { FILLET, arrives, clusterHull, endDir, halfWidth, heightAt, junctionRing, laneOffsets, onRealRoad, pointAt, stopDist, type Edge, type Junction, type RealMap } from './roads'
 
 /**
  * A real place, drawn from its map data: the road surface (with rounded kerb corners and cul-de-sac bulbs), kerbs and sidewalks,
@@ -9,6 +9,7 @@ import { FILLET, arrives, clusterHull, endDir, halfWidth, junctionRing, laneOffs
 type V3 = [number, number, number]
 type P2 = [number, number]
 const WHITE: V3 = [0.92, 0.92, 0.9], YELLOW: V3 = [0.95, 0.75, 0.1]
+const CONCRETE: V3 = [0.68, 0.67, 0.64], CONCRETE_DARK: V3 = [0.45, 0.45, 0.44]
 const KERB: V3 = [0.62, 0.62, 0.6], WALK: V3 = [0.7, 0.69, 0.66], POST: V3 = [0.45, 0.47, 0.5]
 const Y_ROAD = 0, Y_MARK = 0.015, Y_WALK = 0.05
 
@@ -46,24 +47,36 @@ export class Geo {
   }
 }
 
-/** the centre-line between s0 and s1 (m along the edge), as points */
-function sub(e: Edge, s0: number, s1: number): P2[] {
+/** a point of a line: x, z, and the road's height there */
+type LP = [number, number, number]
+/** the centre-line between s0 and s1 (m along the edge), as points with the road's height (up on a bridge, climbing towards one;
+ *  a climb is drawn in steps of 8 m or less, so it is a smooth slope) */
+function sub(e: Edge, s0: number, s1: number): LP[] {
   if (s1 - s0 < 0.05) return []
-  const a = pointAt(e, s0), b = pointAt(e, s1)
-  const out: P2[] = [[a[0], a[1]]]
-  for (let k = 1; k < e.cum.length - 1; k++) if (e.cum[k] > s0 + 0.05 && e.cum[k] < s1 - 0.05) out.push([e.pts[k * 2], e.pts[k * 2 + 1]])
-  out.push([b[0], b[1]])
+  const ss = [s0]
+  for (let k = 1; k < e.cum.length - 1; k++) if (e.cum[k] > s0 + 0.05 && e.cum[k] < s1 - 0.05) ss.push(e.cum[k])
+  ss.push(s1)
+  const ramps = e.hA > 0 || e.hB > 0
+  const out: LP[] = []
+  const at = (s: number) => { const p = pointAt(e, s); out.push([p[0], p[1], heightAt(e, s)]) }
+  for (let i = 0; i < ss.length; i++) {
+    if (ramps && i > 0) {
+      const n = Math.floor((ss[i] - ss[i - 1]) / 8)
+      for (let q = 1; q < n; q++) at(ss[i - 1] + ((ss[i] - ss[i - 1]) * q) / n)
+    }
+    at(ss[i])
+  }
   return out
 }
 /** a strip following a line, between offsets o1 and o2 to its right (m), with mitred corners */
-function strip(g: Geo, line: P2[], o1: number, o2: number, y: number, color: V3) {
+function strip(g: Geo, line: LP[], o1: number, o2: number, y: number, color: V3) {
   if (line.length < 2) return
   const nrm: P2[] = []
   for (let i = 0; i < line.length; i++) {
     const p = line[Math.max(0, i - 1)], q = line[Math.min(line.length - 1, i + 1)]
     // average of the neighbouring stretches' right-hand normals, lengthened at a bend so the strip keeps its width
     let nx = 0, nz = 0
-    const seg = (u: P2, v: P2) => { const dx = v[0] - u[0], dz = v[1] - u[1], L = Math.hypot(dx, dz) || 1; return [-dz / L, dx / L] as P2 }
+    const seg = (u: LP, v: LP) => { const dx = v[0] - u[0], dz = v[1] - u[1], L = Math.hypot(dx, dz) || 1; return [-dz / L, dx / L] as P2 }
     const n1 = i > 0 ? seg(p, line[i]) : null, n2 = i < line.length - 1 ? seg(line[i], q) : null
     if (n1) { nx += n1[0]; nz += n1[1] }
     if (n2) { nx += n2[0]; nz += n2[1] }
@@ -75,7 +88,28 @@ function strip(g: Geo, line: P2[], o1: number, o2: number, y: number, color: V3)
   }
   for (let i = 0; i + 1 < line.length; i++) {
     const a = line[i], b = line[i + 1], na = nrm[i], nb = nrm[i + 1]
-    g.quad([a[0] + na[0] * o1, a[1] + na[1] * o1], [a[0] + na[0] * o2, a[1] + na[1] * o2], [b[0] + nb[0] * o2, b[1] + nb[1] * o2], [b[0] + nb[0] * o1, b[1] + nb[1] * o1], y, color)
+    const ya = y + a[2], yb = y + b[2]
+    const A: V3 = [a[0] + na[0] * o1, ya, a[1] + na[1] * o1], B: V3 = [a[0] + na[0] * o2, ya, a[1] + na[1] * o2]
+    const C: V3 = [b[0] + nb[0] * o2, yb, b[1] + nb[1] * o2], D: V3 = [b[0] + nb[0] * o1, yb, b[1] + nb[1] * o1]
+    g.tri(A, B, C, color); g.tri(A, C, D, color)
+  }
+}
+/** the side of a raised road: a wall along a line at offset o (m to its right), from `bottom` (below the surface, or down to the
+ *  ground if null) up to `top` above the surface; faces outwards */
+function wall(g: Geo, line: LP[], o: number, bottom: number | null, top: number, color: V3) {
+  for (let i = 0; i + 1 < line.length; i++) {
+    const a = line[i], b = line[i + 1]
+    const dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz) || 1
+    const nx = -dz / L, nz = dx / L // right of the line
+    const ax = a[0] + nx * o, az = a[1] + nz * o, bx = b[0] + nx * o, bz = b[1] + nz * o
+    const a0 = bottom === null ? 0 : a[2] + bottom, b0 = bottom === null ? 0 : b[2] + bottom
+    const s = Math.sign(o) || 1, n: V3 = [nx * s, 0, nz * s]
+    g.tri([ax, a0, az], [bx, b0, bz], [bx, b[2] + top, bz], color, n)
+    g.tri([ax, a0, az], [bx, b[2] + top, bz], [ax, a[2] + top, az], color, n)
+    // (and the other face, so the wall is solid from either side)
+    const m: V3 = [-n[0], 0, -n[2]]
+    g.tri([ax, a0, az], [bx, b[2] + top, bz], [bx, b0, bz], color, m)
+    g.tri([ax, a0, az], [ax, a[2] + top, az], [bx, b[2] + top, bz], color, m)
   }
 }
 /** a dashed line: 3 m paint, 9 m gap (the US 10 ft / 30 ft pattern) */
@@ -124,7 +158,7 @@ function arrowFor(t: string[]): keyof typeof ARROW_SHAPES | null {
 }
 
 /** where each sign goes (and which picture), worked out once per area */
-export interface SignDef { x: number; z: number; face: P2; kind: 'stop' | 'allway' | 'yield' | 'noentry' | number; /** the way away from the road (to move it clear) */ out?: P2 }
+export interface SignDef { x: number; z: number; /** the ground (or road) height it stands on */ y0?: number; face: P2; kind: 'stop' | 'allway' | 'yield' | 'noentry' | number; /** the way away from the road (to move it clear) */ out?: P2 }
 
 /** a tile's box (m): what lies in it is built with it */
 export interface Box { x0: number; x1: number; z0: number; z1: number }
@@ -180,7 +214,25 @@ export function buildRoads(m: RealMap, box?: Box) {
   /** one stretch [a, b) of an edge: its road surface, kerbs and sidewalks, paint and speed signs */
   function buildEdge(e: Edge, a: number, b: number) {
     const wR = halfWidth(e, 1), wL = halfWidth(e, -1)
-    strip(road, sub(e, a, b), -wL, wR, Y_ROAD, [1, 1, 1])
+    const line = sub(e, a, b)
+    strip(road, line, -wL, wR, Y_ROAD, [1, 1, 1])
+    // ---- a bridge or overpass: a concrete deck (its sides and underside), parapets along its edges, and pillars down to the ground;
+    // the climb up to one: walls down to the ground on both sides (an embankment) ----
+    const raised = line.some((p) => p[2] > 0.3)
+    if (raised) {
+      if (e.level > 0) {
+        wall(solid, line, wR + 0.15, -1.2, 0.9, CONCRETE)
+        wall(solid, line, -wL - 0.15, -1.2, 0.9, CONCRETE)
+        strip(solid, line, wR + 0.15, -wL - 0.15, -1.2, CONCRETE_DARK) // (wound the other way: it is seen from below)
+        for (let sp = Math.ceil(a / 30) * 30 + 15; sp < b; sp += 30) {
+          const [px, pz] = pointAt(e, sp), top = heightAt(e, sp) - 1.2
+          if (top > 1) solid.box(px, 0, pz, 1.1, top, 1.1, CONCRETE)
+        }
+      } else {
+        wall(solid, line.filter((p) => p[2] > 0.05), wR + 0.15, null, 0.9, CONCRETE)
+        wall(solid, line.filter((p) => p[2] > 0.05), -wL - 0.15, null, 0.9, CONCRETE)
+      }
+    }
     const [t0, t1] = trims(m, e)
     // (s0, s1: where the paint runs along the whole edge; lo, hi: the part of that in this stretch; w0..w1: the sidewalks)
     const s0 = Math.min(t0, e.len / 2), s1 = Math.max(e.len - t1, e.len / 2)
@@ -192,7 +244,7 @@ export function buildRoads(m: RealMap, box?: Box) {
     // (a piece of road inside a larger intersection: just the road surface; the intersection has no paint or kerbs in its middle)
     if (e.internal) return
     // ---- kerbs and sidewalks (a grass strip between the kerb and the sidewalk) ----
-    if (sidewalked(e) && w1 - w0 > 0.5) {
+    if (sidewalked(e) && w1 - w0 > 0.5 && !raised) { // (no sidewalks up on a bridge or its climb)
       const divided = e.oneway && !e.cls.endsWith('_link')
       for (const side of divided ? [1] : [1, -1]) {
         const w = side === 1 ? wR : wL
@@ -264,7 +316,8 @@ export function buildRoads(m: RealMap, box?: Box) {
           const k2 = 1.25
           for (const poly of ARROW_SHAPES[shape]) {
             const pts = poly.map(([u, v]) => [cx + fx * (u * k2 - 3.9 * k2) + rx * v * k2, cz + fz * (u * k2 - 3.9 * k2) + rz * v * k2] as P2)
-            for (let q = 1; q + 1 < pts.length; q++) marks.tri([pts[0][0], Y_MARK, pts[0][1]], [pts[q + 1][0], Y_MARK, pts[q + 1][1]], [pts[q][0], Y_MARK, pts[q][1]], WHITE)
+            const yy = Y_MARK + heightAt(e, sTip)
+            for (let q = 1; q + 1 < pts.length; q++) marks.tri([pts[0][0], yy, pts[0][1]], [pts[q + 1][0], yy, pts[q + 1][1]], [pts[q][0], yy, pts[q][1]], WHITE)
           }
         })
       }
@@ -279,7 +332,7 @@ export function buildRoads(m: RealMap, box?: Box) {
         // a driver turning in would travel b -> a (along -d); their right is (dz, -dx)... the sign stands on their right, facing them
         const tx = -dx, tz = -dz, rx = -tz, rz = tx
         const off = halfWidth(e, 1) + 1.1
-        signs.push({ x: px + rx * off, z: pz + rz * off, face: [-tx, -tz], kind: 'noentry', out: [rx, rz] })
+        signs.push({ x: px + rx * off, z: pz + rz * off, y0: heightAt(e, sAt), face: [-tx, -tz], kind: 'noentry', out: [rx, rz] })
       }
     }
 
@@ -292,7 +345,7 @@ export function buildRoads(m: RealMap, box?: Box) {
         const [px, pz, dx, dz] = pointAt(e, s)
         const tx = dx * dir, tz = dz * dir // travel direction
         const off = (dir === 1 ? wR : wL) + 1.0
-        signs.push({ x: px + -tz * off, z: pz + tx * off, face: [-tx, -tz], kind: mph, out: [-tz, tx] })
+        signs.push({ x: px + -tz * off, z: pz + tx * off, y0: heightAt(e, s), face: [-tx, -tz], kind: mph, out: [-tz, tx] })
       }
     }
   }
@@ -300,9 +353,9 @@ export function buildRoads(m: RealMap, box?: Box) {
   // ---- junctions: the surface where roads meet, with rounded corners; cul-de-sac bulbs; stop lines and STOP signs ----
   for (const j of m.junctions) {
     if (!inBox(box, j.x, j.z)) continue
-    if (j.bulb) disc(road, j.x, j.z, j.bulb, Y_ROAD, [1, 1, 1], 28)
+    if (j.bulb) disc(road, j.x, j.z, j.bulb, Y_ROAD + j.y, [1, 1, 1], 28)
     // a dead end's rounded end, or a bend where two stretches of road join (fills the wedge on the outside of the bend)
-    if ((j.ends.length === 1 && !j.bulb) || j.ends.length === 2) disc(road, j.x, j.z, j.r0, Y_ROAD, [1, 1, 1], 16)
+    if ((j.ends.length === 1 && !j.bulb) || j.ends.length === 2) disc(road, j.x, j.z, j.r0, Y_ROAD + j.y, [1, 1, 1], 16)
     if (j.ends.length < 3) continue
     junctionSurface(road, m, j)
     // a larger intersection (a divided road crossing another): one surface over the whole of it, drawn with its first junction
@@ -311,7 +364,8 @@ export function buildRoads(m: RealMap, box?: Box) {
       let cx = 0, cz = 0
       for (const [x, z] of hull) { cx += x; cz += z }
       cx /= hull.length; cz /= hull.length
-      for (let i = 0; i < hull.length; i++) { const p = hull[i], q = hull[(i + 1) % hull.length]; road.tri([cx, Y_ROAD, cz], [p[0], Y_ROAD, p[1]], [q[0], Y_ROAD, q[1]], [1, 1, 1]) }
+      const hy = Y_ROAD + m.clusters[j.cluster].reduce((t, k) => t + k.y, 0) / m.clusters[j.cluster].length
+      for (let i = 0; i < hull.length; i++) { const p = hull[i], q = hull[(i + 1) % hull.length]; road.tri([cx, hy, cz], [p[0], hy, p[1]], [q[0], hy, q[1]], [1, 1, 1]) }
     }
     // stop lines and signs for each road that must stop here
     for (const { e: ei, atA } of j.ends) {
@@ -332,12 +386,12 @@ export function buildRoads(m: RealMap, box?: Box) {
       const P = (o: number, along: number): P2 => [bx + rx * o + d[0] * along, bz + rz * o + d[1] * along]
       if (ctl === 'yield') {
         // a give-way line: white triangles across the lane ("shark's teeth"), and a YIELD sign
-        for (let o = inner + 0.3; o + 0.6 < outer; o += 0.9) { const a1 = P(o, 0), a2 = P(o + 0.6, 0), tip = P(o + 0.3, 0.9); marks.tri([a1[0], Y_MARK, a1[1]], [tip[0], Y_MARK, tip[1]], [a2[0], Y_MARK, a2[1]], WHITE) }
-        signs.push({ x: bx + rx * (right + 1.1) + d[0] * 0.8, z: bz + rz * (right + 1.1) + d[1] * 0.8, face: [d[0], d[1]], kind: 'yield', out: [rx, rz] })
+        for (let o = inner + 0.3; o + 0.6 < outer; o += 0.9) { const a1 = P(o, 0), a2 = P(o + 0.6, 0), tip = P(o + 0.3, 0.9); marks.tri([a1[0], Y_MARK + j.y, a1[1]], [tip[0], Y_MARK + j.y, tip[1]], [a2[0], Y_MARK + j.y, a2[1]], WHITE) }
+        signs.push({ x: bx + rx * (right + 1.1) + d[0] * 0.8, z: bz + rz * (right + 1.1) + d[1] * 0.8, y0: j.y, face: [d[0], d[1]], kind: 'yield', out: [rx, rz] })
         continue
       }
-      marks.quad(P(inner, 0), P(outer, 0), P(outer, 0.5), P(inner, 0.5), Y_MARK, WHITE)
-      if (ctl === 'stop') signs.push({ x: bx + rx * (right + 1.1) + d[0] * 0.8, z: bz + rz * (right + 1.1) + d[1] * 0.8, face: [d[0], d[1]], kind: j.allWay ? 'allway' : 'stop', out: [rx, rz] })
+      marks.quad(P(inner, 0), P(outer, 0), P(outer, 0.5), P(inner, 0.5), Y_MARK + j.y, WHITE)
+      if (ctl === 'stop') signs.push({ x: bx + rx * (right + 1.1) + d[0] * 0.8, z: bz + rz * (right + 1.1) + d[1] * 0.8, y0: j.y, face: [d[0], d[1]], kind: j.allWay ? 'allway' : 'stop', out: [rx, rz] })
     }
   }
 
@@ -354,7 +408,7 @@ export function buildRoads(m: RealMap, box?: Box) {
 
   // ---- sign posts ----
   for (const s of signs) {
-    solid.box(s.x, 0, s.z, 0.07, s.kind === 'stop' || s.kind === 'allway' ? 2.3 : 2.4, 0.07, POST)
+    solid.box(s.x, s.y0 ?? 0, s.z, 0.07, s.kind === 'stop' || s.kind === 'allway' ? 2.3 : 2.4, 0.07, POST)
   }
   return { road: road.build(), marks: marks.build(), solid: solid.build(), signs }
 }
@@ -364,7 +418,7 @@ function junctionSurface(g: Geo, m: RealMap, j: Junction) {
   const ring = junctionRing(m, j)
   for (let i = 0; i < ring.length; i++) {
     const p = ring[i], q = ring[(i + 1) % ring.length]
-    g.tri([j.x, Y_ROAD, j.z], [p[0], Y_ROAD, p[1]], [q[0], Y_ROAD, q[1]], [1, 1, 1])
+    g.tri([j.x, Y_ROAD + j.y, j.z], [p[0], Y_ROAD + j.y, p[1]], [q[0], Y_ROAD + j.y, q[1]], [1, 1, 1])
   }
 }
 
@@ -540,7 +594,7 @@ export function signMesh(defs: SignDef[]) {
     const cell = s.kind === 'stop' ? 0 : s.kind === 'allway' ? 1 : s.kind === 'yield' ? CELL_YIELD : s.kind === 'noentry' ? CELL_NOENTRY : 2 + Math.max(0, li)
     const isStop = s.kind === 'stop' || s.kind === 'allway' || s.kind === 'yield' || s.kind === 'noentry'
     const w = isStop ? 0.9 : 0.85, h = isStop ? 0.9 : 0.85
-    const y = isStop ? (s.kind === 'allway' ? 1.95 : 2.05) : 1.95
+    const y = (isStop ? (s.kind === 'allway' ? 1.95 : 2.05) : 1.95) + (s.y0 ?? 0)
     const rx = s.face[1], rz = -s.face[0] // to the sign's right as you face it
     const u0 = (cell % COLS) / COLS, u1 = ((cell % COLS) + 1) / COLS
     const row = Math.floor(cell / COLS), v0 = 1 - (row + 1) / ROWS, v1 = 1 - row / ROWS // (the canvas is flipped: its top row is at v = 1)

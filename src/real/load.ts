@@ -21,7 +21,7 @@ export interface Place {
 }
 
 /** the place being driven: its map (all the tiles loaded so far), the start, and which tiles are loaded */
-export const REAL: { map: RealMap | null; place: Place | null; tiles: Set<string> } = { map: null, place: null, tiles: new Set() }
+export const REAL: { map: RealMap | null; place: Place | null; tiles: Set<string>; startAt: { x: number; z: number; h: number; y: number } | null } = { map: null, place: null, tiles: new Set(), startAt: null }
 
 const TILE = 0.01 // degrees
 /** how many tiles are kept in memory at once */
@@ -370,6 +370,7 @@ function forget() {
   REAL.tiles.clear()
   REAL.map = null
   REAL.place = null
+  REAL.startAt = null
 }
 /** Cancel: stop downloading and forget the place (the tiles already downloaded stay in the browser's copy). */
 export function cancelPlace() {

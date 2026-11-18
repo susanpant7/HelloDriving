@@ -58,11 +58,11 @@ export function setDestination(p: Place | null) {
 }
 
 let planId = 0
-/** plan the route from the start (the chosen place) to the destination */
-export async function planRoute() {
+/** plan the route from the start (the chosen place, or where you put the car, setting off the way it faces) to the destination */
+export async function planRoute(from?: { lat: number; lon: number; heading?: number }) {
   const id = ++planId
   ROUTE.route = null; ROUTE.xy = null
-  const a = REAL.place, b = ROUTE.dest
+  const a = from ?? REAL.place, b = ROUTE.dest
   if (!a || !b) { setStatus('none'); return }
   setStatus('loading', 'Planning the route…')
   try {

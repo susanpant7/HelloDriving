@@ -1,8 +1,9 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { startGame } from '../game/sim'
 import { useGame } from '../game/store'
-import { REAL, cancelPlace, openPlace, placeName, savedPlace, searchPlaces, type Place } from '../real/load'
-import { ROUTE, cancelRoute, savedDest, setDestination } from '../real/route'
+import { REAL, cancelPlace, loadedAt, openPlace, placeName, savedPlace, searchPlaces, type Place } from '../real/load'
+import { ROUTE, cancelRoute, planRoute, savedDest, setDestination } from '../real/route'
+import { snapCar, toLatLon } from '../real/roads'
 import { MapPicker } from './MapPicker'
 
 type Which = 'start' | 'dest' | 'dir'
@@ -68,6 +69,7 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
   const chooseB = (p: Place | null) => { setB(p); setQB(p ? short(p.label) : ''); if (p) setCenter({ lat: p.lat, lon: p.lon, zoom: 15 }) }
   // a tap on the map: the pin moves at once, and the street name is looked up
   const pickOnMap = (lat: number, lon: number) => {
+    if (placing) { placeCar(lat, lon); return }
     if (locked) return
     const which = tapSets
     if (which === 'dir') {
@@ -91,7 +93,35 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
     void openPlace(a)
     setDestination(b) // (plans the route from A, if there is a B)
   }
-  const stop = () => { cancelPlace(); cancelRoute() }
+  const stop = () => { cancelPlace(); cancelRoute(); setCar(null); setPlacing(false); setPlaceMsg('') }
+
+  // ---- Position car (once the map is downloaded): tap a road to put the car there, tap the car to turn it round ----
+  const [placing, setPlacing] = useState(false)
+  const [car, setCar] = useState<{ lat: number; lon: number; heading: number } | null>(null)
+  const [placeMsg, setPlaceMsg] = useState('')
+  const placeCar = (lat: number, lon: number) => {
+    const m = REAL.map
+    if (!m) return
+    const x = (lon - m.lon0) * m.kx, z = -(lat - m.lat0) * m.kz
+    if (!loadedAt(x, z)) { setPlaceMsg('That is outside the downloaded map: tap a road inside the blue area.'); return }
+    const cur = REAL.startAt
+    // a tap on (or right by) the car: turn it round
+    const flip = cur && Math.hypot(cur.x - x, cur.z - z) < 12
+    const want = flip ? cur.h + Math.PI : cur?.h
+    const p = snapCar(m, flip ? cur.x : x, flip ? cur.z : z, want)
+    if (!p) { setPlaceMsg('No road there: tap on a road.'); return }
+    if (flip && p.oneway) setPlaceMsg(`${p.name || 'This road'} is one-way: the car can only face the way it goes.`)
+    else setPlaceMsg(`Car on ${p.name || 'an unnamed road'}, facing ${compass(((-p.h * 180) / Math.PI + 720) % 360)}. Tap the car to turn it round.`)
+    REAL.startAt = { x: p.x, z: p.z, h: p.h, y: p.y }
+    const ll = toLatLon(m, p.x, p.z), heading = ((-p.h * 180) / Math.PI + 720) % 360
+    setCar({ ...ll, heading })
+    // with a destination: the route now starts here, setting off this way
+    if (ROUTE.dest) void planRoute({ ...ll, heading })
+  }
+  const clearCar = () => {
+    REAL.startAt = null; setCar(null); setPlaceMsg('')
+    if (ROUTE.dest) void planRoute()
+  }
 
   // the route on the map, once it is planned
   const routeLine = route.status === 'ready' ? ROUTE.route?.coords ?? null : null
@@ -115,7 +145,9 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
           <button type="button" disabled={locked || !a} className={tapSets === 'dir' ? 'on' : ''} onClick={() => setTapSets('dir')} title="Tap the map where the car should head">Direction</button>
         </div>
       </div>
-      <MapPicker center={center} marker={a} heading={a?.heading ?? null} dest={b} route={routeLine} tiles={[...REAL.tiles]} onPick={pickOnMap} />
+      <MapPicker center={center} marker={a} heading={a?.heading ?? null} dest={b} route={routeLine} car={car} tiles={[...REAL.tiles]} onPick={pickOnMap} />
+      {ready && placing && <p className="pp-msg pp-place">{placeMsg || 'Tap a road inside the blue area to put the car there; tap the car again to turn it round.'}</p>}
+      {ready && !placing && car && <p className="pp-msg pp-place">{placeMsg.split('. Tap')[0]}. <button type="button" className="linkbtn" onClick={clearCar}>Start at A instead</button></p>}
       {a && (
         <p className="pp-msg pp-dir">
           {a.heading === undefined
@@ -148,7 +180,8 @@ export function PlacePicker({ onBack }: { onBack: () => void }) {
         {ready && (
           <>
             <button type="button" className="secondary" onClick={stop}>Change places</button>
-            <button type="button" className="primary" onClick={() => startGame()}>Drive</button>
+            <button type="button" className={placing ? 'primary' : 'secondary'} onClick={() => setPlacing((p) => !p)}>{placing ? 'Done' : 'Position car'}</button>
+            {!placing && <button type="button" className="primary" disabled={route.status === 'loading'} onClick={() => startGame()}>Drive</button>}
           </>
         )}
       </div>

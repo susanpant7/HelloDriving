@@ -13,17 +13,17 @@ import { useGame } from './store'
  * so the view stays smooth on screens faster or slower than 60 Hz.
  */
 const STEP = 1 / 60
-export const renderPose = { x: 0, z: 0, h: 0 }
+export const renderPose = { x: 0, z: 0, h: 0, y: 0 }
 /** where each traffic car was before the last step, and how far between that and now to draw it (like your own car: smooth at any frame rate) */
 export const trafficPrev = { x: new Float32Array(MAX_CARS), z: new Float32Array(MAX_CARS), a: 1 }
 export function Simulation() {
   const acc = useRef(0)
-  const prev = useRef({ x: 0, z: 0, h: 0 })
+  const prev = useRef({ x: 0, z: 0, h: 0, y: 0 })
   useFrame((_, dt) => {
     acc.current += Math.min(dt, 0.25)
     let n = 0
     while (acc.current >= STEP && n < 6) {
-      prev.current.x = sim.x; prev.current.z = sim.z; prev.current.h = sim.h
+      prev.current.x = sim.x; prev.current.z = sim.z; prev.current.h = sim.h; prev.current.y = sim.y
       for (let i = 0; i < cars.length; i++) { trafficPrev.x[i] = cars[i].x; trafficPrev.z[i] = cars[i].z }
       stepSim(STEP)
       acc.current -= STEP
@@ -33,9 +33,10 @@ export function Simulation() {
     const a = acc.current / STEP, p = prev.current
     trafficPrev.a = a
     // a reset or a jump to a new place: no blending across it
-    if (Math.hypot(sim.x - p.x, sim.z - p.z) > 15) { renderPose.x = sim.x; renderPose.z = sim.z; renderPose.h = sim.h }
+    if (Math.hypot(sim.x - p.x, sim.z - p.z) > 15) { renderPose.x = sim.x; renderPose.z = sim.z; renderPose.h = sim.h; renderPose.y = sim.y }
     else {
       renderPose.x = p.x + (sim.x - p.x) * a
+      renderPose.y = p.y + (sim.y - p.y) * a
       renderPose.z = p.z + (sim.z - p.z) * a
       const dh = Math.atan2(Math.sin(sim.h - p.h), Math.cos(sim.h - p.h))
       renderPose.h = p.h + dh * a

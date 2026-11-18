@@ -195,7 +195,7 @@ export function PlayerRig() {
     }
     const crashed = useGame.getState().status === 'crashed'
     const g = rig.current
-    g.position.set(renderPose.x, 0, renderPose.z)
+    g.position.set(renderPose.x, renderPose.y, renderPose.z) // (up on a bridge in a real place)
     g.rotation.y = renderPose.h
     wheel.current.rotation.z = -sim.steerIn * Math.PI * 2 * 1.5 // like a real car: three turns from lock to lock
 

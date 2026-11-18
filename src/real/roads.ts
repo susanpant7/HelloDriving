@@ -48,6 +48,11 @@ export interface Edge {
   /** a short piece of road inside a larger intersection (between the junctions where a divided road crosses another): no paint,
    *  kerbs or stop lines of its own, and nobody stops at its end */
   internal: boolean
+  /** a bridge or overpass: how many levels up (0 on the ground); and the road's height at its a and b ends (m: a road leading onto a
+   *  bridge climbs to it over its last stretch) */
+  level: number
+  hA: number
+  hB: number
   /** what each lane is for at the junction ahead (from the map's turn:lanes; left to right, e.g. ['left'], ['through', 'right']),
    *  for travel a -> b (F) and b -> a (B); null where the map does not say */
   turnF: string[][] | null
@@ -71,6 +76,8 @@ export interface Junction {
   bulb: number
   /** the larger intersection it is part of (an index into RealMap.clusters), or -1 */
   cluster: number
+  /** the height of the road surface here (m): 0 on the ground, up at the end of a bridge */
+  y: number
   /** for each road meeting here: how far from the centre it is clear of the other roads (its stop line goes just beyond) */
   set: Map<number, number>
   /** the widest road's half width here (the round patch drawn at a bend or a dead end) */
@@ -197,7 +204,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       const o = nodes.get(n)!
       k = junctions.length
       jIndex.set(n, k)
-      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map(), cluster: -1, set: new Map() })
+      junctions.push({ id: k, x: X(o.lon), z: Z(o.lat), ends: [], r: 0, r0: 0, bulb: 0, ctl: new Map(), allWay: false, ctlFromMap: false, src: new Map(), cluster: -1, set: new Map(), y: 0 })
     }
     return k
   }
@@ -233,7 +240,10 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     lf = Math.min(lf, 6); lb = Math.min(lb, 6)
     const lw = laneWidth(cls, Math.max(lf, lb))
     const tagged = parseLimit(t.maxspeed)
-    const base = { internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
+    // a bridge or overpass (a tunnel is simply drawn at ground level)
+    const layer = parseInt(t.layer ?? '', 10)
+    const level = t.tunnel && t.tunnel !== 'no' ? 0 : t.bridge && t.bridge !== 'no' ? Math.max(1, Number.isFinite(layer) ? layer : 1) : Number.isFinite(layer) && layer > 0 ? layer : 0
+    const base = { level: Math.min(level, 3), hA: 0, hB: 0, internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
     let start = 0
     for (let i = 1; i < list.length; i++) {
       if (i < list.length - 1 && (uses.get(list[i]) ?? 0) < 2) continue // (not a junction: the road carries on)
@@ -259,6 +269,26 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
       start = i
     }
   }
+
+  // ---- heights: a junction is as high as the highest bridge that reaches it. Away from a bridge, the same road comes down at a
+  // steady slope (however many pieces the map cuts it into); a road merely connected to it (a slip road, the road passing underneath)
+  // is not lifted ----
+  for (const j of junctions) for (const { e } of j.ends) j.y = Math.max(j.y, edges[e].level * LEVEL_H)
+  const roadOf = (e: Edge) => e.name || `~${e.cls.replace('_link', '')}`
+  const stack: Array<[number, string]> = []
+  junctions.forEach((j, i) => { if (j.y > 0) for (const { e } of j.ends) if (edges[e].level > 0) stack.push([i, roadOf(edges[e])]) })
+  while (stack.length) {
+    const [ji, road] = stack.pop()!
+    const j = junctions[ji]
+    for (const { e: ei, atA } of j.ends) {
+      const e = edges[ei]
+      if (e.level > 0 || roadOf(e) !== road) continue
+      const k = atA ? e.b : e.a
+      const h = j.y - e.len * SLOPE
+      if (h > junctions[k].y + 0.05) { junctions[k].y = h; stack.push([k, road]) }
+    }
+  }
+  for (const e of edges) { e.hA = junctions[e.a].y; e.hB = junctions[e.b].y }
 
   // ---- each junction's size: as wide as the widest road meeting there ----
   for (const j of junctions) {
@@ -564,13 +594,14 @@ export interface Near {
   off: number
   dx: number
   dz: number
-  /** the closest point on the centre-line, and how far away it is */
+  /** the closest point on the centre-line, and how far away it is; the road's height there */
   px: number
   pz: number
   d: number
+  y: number
 }
 /** the edges near a point, closest first (within `maxD` of the centre-line) */
-export function nearEdges(m: RealMap, x: number, z: number, maxD = 30): Near[] {
+export function nearEdges(m: RealMap, x: number, z: number, maxD = 30, y?: number): Near[] {
   const out: Near[] = []
   const seen = new Set<number>()
   const r = Math.ceil(maxD / CELL)
@@ -598,7 +629,11 @@ export function nearEdges(m: RealMap, x: number, z: number, maxD = 30): Near[] {
       const L = Math.sqrt(L2)
       const ux = dx / L, uz = dz / L
       // right of a -> b is (-uz, ux)
-      best.set(ei, { e, s: e.cum[si] + t * L, off: (x - px) * -uz + (z - pz) * ux, dx: ux, dz: uz, px, pz, d })
+      const s = e.cum[si] + t * L
+      const h = heightAt(e, s)
+      // (a road above or below you is not yours: a bridge over the road, or the road under the bridge you are on)
+      if (y !== undefined && Math.abs(h - y) > LEVEL_SLACK) continue
+      best.set(ei, { e, s, off: (x - px) * -uz + (z - pz) * ux, dx: ux, dz: uz, px, pz, d, y: h })
     }
   }
   for (const v of best.values()) out.push(v)
@@ -607,13 +642,14 @@ export function nearEdges(m: RealMap, x: number, z: number, maxD = 30): Near[] {
 }
 
 /** is this point on the road (with `slack` metres to spare beyond the paved edge)? */
-export function onRealRoad(m: RealMap, x: number, z: number, slack = 1.2): boolean {
-  for (const n of nearEdges(m, x, z, 30)) {
+export function onRealRoad(m: RealMap, x: number, z: number, slack = 1.2, y?: number): boolean {
+  for (const n of nearEdges(m, x, z, 30, y)) {
     const side = n.off >= 0 ? 1 : -1
     if (Math.abs(n.off) <= halfWidth(n.e, side) + slack) return true
   }
   // junction surfaces (with their rounded corners), bends, dead ends and cul-de-sac bulbs
   for (const j of junctionsNear(m, x, z)) {
+    if (y !== undefined && Math.abs(j.y - y) > LEVEL_SLACK) continue
     const d = Math.hypot(x - j.x, z - j.z)
     if (j.bulb && d <= j.bulb + slack) return true
     if (j.ends.length < 3) { if (j.ends.length && d <= j.r0 + slack) return true; continue }
@@ -733,10 +769,10 @@ export function laneOffsets(e: Edge, dir: 1 | -1): number[] {
  * The middle of the lane you are in, for travel in the direction you are heading (lane assist, recovery). Returns the point on the
  * lane's centre-line beside (x, z) and the lane's heading there.
  */
-export function realLaneTarget(m: RealMap, x: number, z: number, h: number, maxD = 9): { x: number; z: number; h: number; w: number } | null {
+export function realLaneTarget(m: RealMap, x: number, z: number, h: number, maxD = 9, y?: number): { x: number; z: number; h: number; w: number } | null {
   const fx = -Math.sin(h), fz = -Math.cos(h)
   let best: { x: number; z: number; h: number; w: number } | null = null, bd = maxD
-  for (const n of nearEdges(m, x, z, maxD + 12)) {
+  for (const n of nearEdges(m, x, z, maxD + 12, y)) {
     const along = n.dx * fx + n.dz * fz
     if (Math.abs(along) < 0.4) continue
     const dir: 1 | -1 = along > 0 ? 1 : -1
@@ -753,10 +789,10 @@ export function realLaneTarget(m: RealMap, x: number, z: number, h: number, maxD
 }
 
 /** where to start (or be put back): on the nearest road to (x, z), in its right-hand lane, facing as close to `h` as the road allows */
-export function realPose(m: RealMap, x: number, z: number, h?: number): { x: number; z: number; h: number } {
-  const ns = nearEdges(m, x, z, 400)
-  // prefer a proper street to a service road or a highway
-  const pick = ns.find((n) => n.e.cls !== 'service' && n.e.cls !== 'motorway' && n.e.cls !== 'motorway_link') ?? ns[0]
+export function realPose(m: RealMap, x: number, z: number, h?: number, y?: number): { x: number; z: number; h: number } {
+  const ns = nearEdges(m, x, z, 400, y)
+  // prefer a proper street to a service road or a highway (and, starting afresh, one on the ground to one on a bridge)
+  const pick = ns.find((n) => n.e.cls !== 'service' && n.e.cls !== 'motorway' && n.e.cls !== 'motorway_link' && (y !== undefined || n.y < 0.5)) ?? ns[0]
   if (!pick) return { x, z, h: h ?? 0 }
   const e = pick.e
   // keep clear of the junctions at either end
@@ -770,8 +806,8 @@ export function realPose(m: RealMap, x: number, z: number, h?: number): { x: num
 }
 
 /** the road you are on (the closest whose paved surface you are on, or the nearest) */
-export function roadAt(m: RealMap, x: number, z: number): Near | null {
-  const ns = nearEdges(m, x, z, 25)
+export function roadAt(m: RealMap, x: number, z: number, y?: number): Near | null {
+  const ns = nearEdges(m, x, z, 25, y)
   return ns.find((n) => Math.abs(n.off) <= halfWidth(n.e, n.off >= 0 ? 1 : -1) + 0.5) ?? ns[0] ?? null
 }
 
@@ -815,4 +851,50 @@ export function clusterHull(m: RealMap, ci: number): Array<[number, number]> {
 /** how far from a junction's centre the stop line of a road arriving there is (m) */
 export function stopDist(j: Junction, e: number) {
   return (j.set.get(e) ?? j.r) + 1.0
+}
+
+/** how much higher each level of bridge is (m), and how steeply a road climbs to one (7 m over about 120 m, as a real approach) */
+export const LEVEL_H = 7
+const SLOPE = LEVEL_H / 120
+/** two roads more than this far apart in height are different roads (one passes over the other) */
+const LEVEL_SLACK = 3.5
+/** the height of a road's surface s metres along it: along a bridge, from one end's height to the other's; elsewhere, coming down
+ *  at the approach slope from whichever end is high (and flat on the ground beyond) */
+export function heightAt(e: Edge, s: number): number {
+  if (e.hA === 0 && e.hB === 0) return 0
+  if (e.level > 0) return e.hA + (e.hB - e.hA) * (e.len > 0 ? Math.max(0, Math.min(1, s / e.len)) : 0)
+  return Math.max(0, e.hA - s * SLOPE, e.hB - (e.len - s) * SLOPE)
+}
+/** the height of the road surface under a point, choosing the road nearest in height to `yNow` (where you are now); 0 off the road */
+export function surfaceAt(m: RealMap, x: number, z: number, yNow: number): number {
+  let best = -1, bd = Infinity
+  // (only roads near your height: a bridge overhead is not under you, however close it is on the map)
+  for (const n of nearEdges(m, x, z, 20, yNow)) {
+    if (Math.abs(n.off) > halfWidth(n.e, n.off >= 0 ? 1 : -1) + 1.5) continue
+    const d = Math.abs(n.y - yNow)
+    if (d < bd) { bd = d; best = n.y }
+  }
+  for (const j of junctionsNear(m, x, z)) {
+    if (Math.hypot(x - j.x, z - j.z) > Math.max(j.r0, j.r) + FILLET + 2 || Math.abs(j.y - yNow) > LEVEL_SLACK) continue
+    const d = Math.abs(j.y - yNow)
+    if (d < bd) { bd = d; best = j.y }
+  }
+  return best < 0 ? 0 : best
+}
+
+/**
+ * Put the car on the road nearest a point (within 40 m, any kind of road, at any height), in the right-hand lane, facing the way
+ * along it closest to `h` (on a one-way road, the way it goes). null if there is no road there.
+ */
+export function snapCar(m: RealMap, x: number, z: number, h?: number): { x: number; z: number; h: number; y: number; oneway: boolean; name: string } | null {
+  const n = nearEdges(m, x, z, 40)[0]
+  if (!n) return null
+  const e = n.e
+  const s = Math.max(Math.min(4, e.len / 2), Math.min(e.len - Math.min(4, e.len / 2), n.s))
+  const [px, pz, dx, dz] = pointAt(e, s)
+  let dir: 1 | -1 = 1
+  if (!e.oneway && h !== undefined) dir = dx * -Math.sin(h) + dz * -Math.cos(h) >= 0 ? 1 : -1
+  const offs = laneOffsets(e, dir)
+  const o = offs[offs.length - 1] ?? 0
+  return { x: px - dz * o, z: pz + dx * o, h: headingOf(dx * dir, dz * dir), y: heightAt(e, s), oneway: e.oneway, name: e.name }
 }
