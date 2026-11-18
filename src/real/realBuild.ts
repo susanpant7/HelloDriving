@@ -10,7 +10,7 @@ import { FILLET, arrives, clusterHull, endDir, halfWidth, heightAt, junctionRing
 type V3 = [number, number, number]
 type P2 = [number, number]
 const WHITE: V3 = [0.92, 0.92, 0.9], YELLOW: V3 = [0.95, 0.75, 0.1]
-const CONCRETE: V3 = [0.68, 0.67, 0.64], CONCRETE_DARK: V3 = [0.45, 0.45, 0.44]
+const CONCRETE: V3 = [0.68, 0.67, 0.64], CONCRETE_DARK: V3 = [0.45, 0.45, 0.44], BRIDGE: V3 = [0.52, 0.52, 0.5] // (a weathered grey: it does not glare in the sun)
 const KERB: V3 = [0.62, 0.62, 0.6], WALK: V3 = [0.7, 0.69, 0.66], POST: V3 = [0.45, 0.47, 0.5]
 const Y_ROAD = 0, Y_MARK = 0.015, Y_WALK = 0.05
 
@@ -57,7 +57,7 @@ function sub(e: Edge, s0: number, s1: number): LP[] {
   const ss = [s0]
   for (let k = 1; k < e.cum.length - 1; k++) if (e.cum[k] > s0 + 0.05 && e.cum[k] < s1 - 0.05) ss.push(e.cum[k])
   ss.push(s1)
-  const ramps = e.hA > 0 || e.hB > 0
+  const ramps = e.hA > 0 || e.hB > 0 || e.humps.length > 0
   const out: LP[] = []
   const at = (s: number) => { const p = pointAt(e, s); out.push([p[0], p[1], heightAt(e, s)]) }
   for (let i = 0; i < ss.length; i++) {
@@ -103,7 +103,8 @@ function wall(g: Geo, line: LP[], o: number, bottom: number | null, top: number,
     const dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz) || 1
     const nx = -dz / L, nz = dx / L // right of the line
     const ax = a[0] + nx * o, az = a[1] + nz * o, bx = b[0] + nx * o, bz = b[1] + nz * o
-    const a0 = bottom === null ? 0 : a[2] + bottom, b0 = bottom === null ? 0 : b[2] + bottom
+    // (never below the ground)
+    const a0 = bottom === null ? 0 : Math.max(0, a[2] + bottom), b0 = bottom === null ? 0 : Math.max(0, b[2] + bottom)
     const s = Math.sign(o) || 1, n: V3 = [nx * s, 0, nz * s]
     g.tri([ax, a0, az], [bx, b0, bz], [bx, b[2] + top, bz], color, n)
     g.tri([ax, a0, az], [bx, b[2] + top, bz], [ax, a[2] + top, az], color, n)
@@ -222,19 +223,23 @@ export function buildRoads(m: RealMap, box?: Box) {
     strip(road, line, -wL, wR, Y_ROAD, [1, 1, 1])
     // ---- a bridge or overpass: a concrete deck (its sides and underside), parapets along its edges, and pillars down to the ground;
     // the climb up to one: walls down to the ground on both sides (an embankment) ----
+    // (every raised stretch is drawn as a bridge, open underneath, so a road passing below is never hidden by walls; its pillars
+    // stand clear of the roads below)
     const raised = line.some((p) => p[2] > 0.3)
     if (raised) {
-      if (e.level > 0) {
-        wall(solid, line, wR + 0.15, -1.2, 0.9, CONCRETE)
-        wall(solid, line, -wL - 0.15, -1.2, 0.9, CONCRETE)
-        strip(solid, line, wR + 0.15, -wL - 0.15, -1.2, CONCRETE_DARK) // (wound the other way: it is seen from below)
-        for (let sp = Math.ceil(a / 30) * 30 + 15; sp < b; sp += 30) {
-          const [px, pz] = pointAt(e, sp), top = heightAt(e, sp) - 1.2
-          if (top > 1) solid.box(px, 0, pz, 1.1, top, 1.1, CONCRETE)
-        }
-      } else {
-        wall(solid, line.filter((p) => p[2] > 0.05), wR + 0.15, null, 0.9, CONCRETE)
-        wall(solid, line.filter((p) => p[2] > 0.05), -wL - 0.15, null, 0.9, CONCRETE)
+      // (each raised run on its own: two bridges on one road are not joined across the ground between them)
+      const runs: LP[][] = []
+      // (only where it is high enough to need a deck and railings: low down near the ground, the road is simply on a slope)
+      line.forEach((p, i) => { if (p[2] > 1.5) { if (i === 0 || line[i - 1][2] <= 1.5) runs.push([]); runs[runs.length - 1].push(p) } })
+      for (const up of runs) {
+        if (up.length < 2) continue
+        wall(solid, up, wR + 0.15, -1.2, 0.9, BRIDGE)
+        wall(solid, up, -wL - 0.15, -1.2, 0.9, BRIDGE)
+        strip(solid, up, wR + 0.15, -wL - 0.15, -1.2, CONCRETE_DARK) // (wound the other way: it is seen from below)
+      }
+      for (let sp = Math.ceil(a / 24) * 24 + 12; sp < b; sp += 24) {
+        const [px, pz] = pointAt(e, sp), top = heightAt(e, sp) - 1.2
+        if (top > 1.5 && !onRealRoad(m, px, pz, 0.8, 0)) solid.box(px, 0, pz, 1.1, top, 1.1, CONCRETE)
       }
     }
     const [t0, t1] = trims(m, e)

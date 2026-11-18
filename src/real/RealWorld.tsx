@@ -87,7 +87,10 @@ export function RealWorld() {
     Object.assign(plan, { x: sim.x, z: sim.z, v: version, t: 0 })
     const R = quality().far + 80
     const tiles = tileBoxes()
-    const hasMap = (b: Box) => tiles.some((t) => b.x0 < t.x1 && b.x1 > t.x0 && b.z0 < t.z1 && b.z1 > t.z0)
+    // a cell is built if it is inside a downloaded tile, or if a downloaded road reaches into it (a road is downloaded whole, so it
+    // often runs on past the edge of its tile: it must not stop dead there)
+    const inTile = (b: Box) => tiles.some((t) => b.x0 < t.x1 && b.x1 > t.x0 && b.z0 < t.z1 && b.z1 > t.z0)
+    const hasMap = (b: Box) => inTile(b) || tileSignature(m, b) !== ''
     const dist = (b: Box) => Math.hypot(Math.max(b.x0 - sim.x, 0, sim.x - b.x1), Math.max(b.z0 - sim.z, 0, sim.z - b.z1))
     // left behind (with a cell's slack, so a cell at the edge does not flicker in and out), or its map dropped: taken away
     for (const key of [...built.keys()]) {
