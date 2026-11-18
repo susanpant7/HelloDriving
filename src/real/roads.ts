@@ -55,9 +55,9 @@ export interface Edge {
   level: number
   /** where (m along it) the road rises over another road the map does not say it bridges (two roads crossing without a junction:
    *  one of them must go over the other) */
-  humps: number[]
-  /** how steeply it climbs towards a bridge (rise per metre): gentle where there is room, steeper where a junction is close */
-  slope: number
+  /** where the road is raised (over another road, or meeting a raised junction): at s it is h high (level for `top` m either side),
+   *  coming down at `sl` (rise per metre) away from there */
+  peaks: Array<{ s: number; h: number; sl: number; top: number }>
   hA: number
   hB: number
   /** what each lane is for at the junction ahead (from the map's turn:lanes; left to right, e.g. ['left'], ['through', 'right']),
@@ -250,7 +250,7 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     // a bridge or overpass (a tunnel is simply drawn at ground level)
     const layer = parseInt(t.layer ?? '', 10)
     const level = t.tunnel && t.tunnel !== 'no' ? 0 : t.bridge && t.bridge !== 'no' ? Math.max(1, Number.isFinite(layer) ? layer : 1) : Number.isFinite(layer) && layer > 0 ? layer : 0
-    const base = { ref: t.ref ?? '', level: Math.min(level, 3), humps: [] as number[], slope: SLOPE, hA: 0, hB: 0, internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
+    const base = { ref: t.ref ?? '', level: Math.min(level, 3), peaks: [] as Edge['peaks'], hA: 0, hB: 0, internal: false, turnF: tF && tF.length === lf ? tF : null, turnB: tB && tB.length === lb ? tB : null, ring: t.junction === 'roundabout' || t.junction === 'circular', lanesTagged: lanes > 0 || !!t['lanes:forward'], name: t.name ?? t.ref ?? '', cls, oneway, lanesF: lf, lanesB: lb, centre, laneW: lw, shoulder: shoulderOf(cls), limit: tagged ?? DEFAULT_MPH[cls] * MPH, limitTagged: tagged !== null }
     let start = 0
     for (let i = 1; i < list.length; i++) {
       if (i < list.length - 1 && (uses.get(list[i]) ?? 0) < 2) continue // (not a junction: the road carries on)
@@ -277,104 +277,111 @@ export function convertOsm(data: OsmData, lat0: number, lon0: number, focus?: { 
     }
   }
 
-  // ---- heights: a junction is as high as the highest bridge that reaches it. Away from a bridge, the same road comes down at a
-  // steady slope (however many pieces the map cuts it into); a road merely connected to it (a slip road, the road passing underneath)
-  // is not lifted ----
-  const roadOf = (e: Edge) => e.name || `~${e.cls.replace('_link', '')}`
-  /** a junction where different streets meet (slip roads not counted): it stays on the ground */
-  const streetJ = (j: Junction) => j.ends.length >= 3 && new Set(j.ends.filter(({ e }) => !isLink(edges[e].cls)).map(({ e }) => roadOf(edges[e]))).size >= 2
-  /** along the same road from a junction (not over the bridge): how far to the first junction with another street (up to 130 m) */
-  const roomFrom = (ji: number, road: string) => {
-    let best = 130
-    const walk = (k: number, from: number, d: number) => {
-      if (d >= best) return
-      for (const { e: ei, atA } of junctions[k].ends) {
-        const e = edges[ei]
-        if (ei === from || e.level > 0 || roadOf(e) !== road) continue
-        const n = atA ? e.b : e.a, dd = d + e.len
-        if (streetJ(junctions[n])) best = Math.min(best, dd)
-        else walk(n, ei, dd)
-      }
-    }
-    walk(ji, -1, 0)
-    return best
-  }
-  // A bridge is 7 m up where its road has room to climb to it gently. Where a junction with another street is close to its end,
-  // the bridge is lower (down to 4.8 m: still room to drive under) and the climb steeper, so the junction stays on the ground.
-  // (In reality the road underneath is often sunk in a cutting, and the bridge is nearly level with the street.)
-  const stack: Array<[number, string, number]> = []
-  junctions.forEach((j, i) => {
-    const top = Math.max(0, ...j.ends.map(({ e }) => edges[e].level * LEVEL_H))
-    if (!top) return
-    let h = top, slope = SLOPE
-    const road = roadOf(edges[j.ends.find(({ e }) => edges[e].level > 0)!.e])
-    if (!streetJ(j)) {
-      const room = roomFrom(i, road)
-      if (room < top / SLOPE) { h = Math.min(top, Math.max(4.8, room * SLOPE)); slope = h / Math.max(room, 1) }
-    }
-    j.y = h
-    stack.push([i, road, slope])
-  })
-
-  // ---- roads that cross without a junction, where the map does not say which one is a bridge: they cannot both be on the ground.
-  // One of them (a slip road rather than a road; the smaller road rather than the bigger) rises over the other on a short bridge ----
+  // ---- heights: a road is raised only where it must pass over another road (CLEAR m above it, at the crossing), and slopes down
+  // from there along the same road: gently where there is room, more steeply (up to MAX_SLOPE) where a junction with another street
+  // is close, so that junction stays on the ground. Every other road at a raised junction starts at the junction's height. A bridge
+  // over water or a railway (no road under it) stays at ground level: there is nothing to clear. ----
   {
-    const G = 64, sg = new Map<number, Array<[number, number]>>() // cell -> [edge, segment]
-    edges.forEach((e, ei) => {
-      for (let k = 0; k + 3 < e.pts.length; k += 2) {
-        const x0 = Math.floor(Math.min(e.pts[k], e.pts[k + 2]) / G), x1 = Math.floor(Math.max(e.pts[k], e.pts[k + 2]) / G)
-        const z0 = Math.floor(Math.min(e.pts[k + 1], e.pts[k + 3]) / G), z1 = Math.floor(Math.max(e.pts[k + 1], e.pts[k + 3]) / G)
-        for (let cx = x0; cx <= x1; cx++) for (let cz = z0; cz <= z1; cz++) { const key = cellKey(cx, cz); let l = sg.get(key); if (!l) sg.set(key, (l = [])); l.push([ei, k / 2]) }
-      }
-    })
-    const done = new Set<string>()
-    for (const l of sg.values()) for (let p = 0; p < l.length; p++) for (let q = p + 1; q < l.length; q++) {
-      const [ea, ka] = l[p], [eb, kb] = l[q]
-      if (ea === eb) continue
-      const A = edges[ea], B = edges[eb]
-      if (A.a === B.a || A.a === B.b || A.b === B.a || A.b === B.b) continue // (they meet at a junction)
-      if (A.level !== B.level) continue // (the map says which is the bridge)
-      // (only where a highway or a slip road is one of them: two ordinary streets crossing with no junction on the map is nearly
-      // always a slip in the map, and they really meet at ground level)
+    const roadOf = (e: Edge) => e.name || `~${e.cls.replace('_link', '')}`
+    /** a junction where different streets meet (slip roads not counted): kept on the ground where it can be */
+    const streetJ = (j: Junction) => j.ends.length >= 3 && new Set(j.ends.filter(({ e }) => !isLink(edges[e].cls)).map(({ e }) => roadOf(edges[e]))).size >= 2
+    // the crossings: two roads crossing on the map with no junction there. Which one is over the other: the map's layers say;
+    // where they do not, a slip road or the smaller road goes over (only where a highway or a slip road is one of them: two ordinary
+    // streets crossing with no junction on the map is nearly always a slip in the map, and they really meet at ground level)
+    const crossings: Array<{ up: number; su: number; lo: number; sl: number; top: number }> = []
+    {
+      const G = 64, sg = new Map<number, Array<[number, number]>>()
+      edges.forEach((e, ei) => {
+        for (let k = 0; k + 3 < e.pts.length; k += 2) {
+          const x0 = Math.floor(Math.min(e.pts[k], e.pts[k + 2]) / G), x1 = Math.floor(Math.max(e.pts[k], e.pts[k + 2]) / G)
+          const z0 = Math.floor(Math.min(e.pts[k + 1], e.pts[k + 3]) / G), z1 = Math.floor(Math.max(e.pts[k + 1], e.pts[k + 3]) / G)
+          for (let cx = x0; cx <= x1; cx++) for (let cz = z0; cz <= z1; cz++) { const key = cellKey(cx, cz); let l = sg.get(key); if (!l) sg.set(key, (l = [])); l.push([ei, k / 2]) }
+        }
+      })
+      const done = new Set<string>()
       const grade = (e: Edge) => e.cls === 'motorway' || e.cls === 'trunk' || isLink(e.cls)
-      if (!grade(A) && !grade(B)) continue
-      const key = `${Math.min(ea, eb)}:${Math.max(ea, eb)}:${ea < eb ? ka : kb}:${ea < eb ? kb : ka}`
-      if (done.has(key)) continue
-      done.add(key)
-      const ax = A.pts[ka * 2], az = A.pts[ka * 2 + 1], bx = A.pts[ka * 2 + 2], bz = A.pts[ka * 2 + 3]
-      const cx = B.pts[kb * 2], cz = B.pts[kb * 2 + 1], dx = B.pts[kb * 2 + 2], dz = B.pts[kb * 2 + 3]
-      const den = (bx - ax) * (dz - cz) - (bz - az) * (dx - cx)
-      if (Math.abs(den) < 1e-9) continue
-      const t = ((cx - ax) * (dz - cz) - (cz - az) * (dx - cx)) / den, u = ((cx - ax) * (bz - az) - (cz - az) * (bx - ax)) / den
-      if (t <= 0 || t >= 1 || u <= 0 || u >= 1) continue
-      const sA = A.cum[ka] + t * (A.cum[ka + 1] - A.cum[ka]), sB = B.cum[kb] + u * (B.cum[kb + 1] - B.cum[kb])
-      // which one goes over
-      const score = (e: Edge, s: number) => (isLink(e.cls) ? 100 : 0) - RANK[e.cls] * 10 + Math.min(s, e.len - s) / 50
-      const [up, s0] = score(A, sA) >= score(B, sB) ? [A, sA] : [B, sB]
-      if (!up.humps.some((h) => Math.abs(h - s0) < 25)) up.humps.push(s0)
-    }
-    // a bridge near the end of a road: the road beyond the junction climbs too (as for a mapped bridge)
-    for (const e of edges) for (const sc of e.humps) {
-      for (const [ji, d] of [[e.a, sc], [e.b, e.len - sc]] as Array<[number, number]>) {
-        const h = LEVEL_H - Math.max(0, d - HUMP_TOP) * SLOPE
-        if (h > junctions[ji].y + 0.05 && !streetJ(junctions[ji])) { junctions[ji].y = h; stack.push([ji, roadOf(e), SLOPE]) }
+      for (const l of sg.values()) for (let p = 0; p < l.length; p++) for (let q = p + 1; q < l.length; q++) {
+        const [ea, ka] = l[p], [eb, kb] = l[q]
+        if (ea === eb) continue
+        const A = edges[ea], B = edges[eb]
+        if (A.a === B.a || A.a === B.b || A.b === B.a || A.b === B.b) continue // (they meet at a junction)
+        if (A.level === B.level && !grade(A) && !grade(B)) continue
+        const key = ea < eb ? `${ea}:${ka}:${eb}:${kb}` : `${eb}:${kb}:${ea}:${ka}`
+        if (done.has(key)) continue
+        done.add(key)
+        const ax = A.pts[ka * 2], az = A.pts[ka * 2 + 1], bx = A.pts[ka * 2 + 2], bz = A.pts[ka * 2 + 3]
+        const cx = B.pts[kb * 2], cz = B.pts[kb * 2 + 1], dx = B.pts[kb * 2 + 2], dz = B.pts[kb * 2 + 3]
+        const den = (bx - ax) * (dz - cz) - (bz - az) * (dx - cx)
+        if (Math.abs(den) < 1e-9) continue
+        const t = ((cx - ax) * (dz - cz) - (cz - az) * (dx - cx)) / den, u = ((cx - ax) * (bz - az) - (cz - az) * (bx - ax)) / den
+        if (t <= 0 || t >= 1 || u <= 0 || u >= 1) continue
+        const sA = A.cum[ka] + t * (A.cum[ka + 1] - A.cum[ka]), sB = B.cum[kb] + u * (B.cum[kb + 1] - B.cum[kb])
+        const score = (e: Edge, s: number) => e.level * 1000 + (isLink(e.cls) ? 100 : 0) - RANK[e.cls] * 10 + Math.min(s, e.len - s) / 50
+        const aUp = score(A, sA) >= score(B, sB)
+        const lo = aUp ? B : A
+        crossings.push({ up: aUp ? ea : eb, su: aUp ? sA : sB, lo: aUp ? eb : ea, sl: aUp ? sB : sA, top: Math.max(halfWidth(lo, 1), halfWidth(lo, -1)) + 3 })
       }
     }
-  }
-  while (stack.length) {
-    const [ji, road, slope] = stack.pop()!
-    const j = junctions[ji]
-    for (const { e: ei, atA } of j.ends) {
-      const e = edges[ei]
-      if (e.level > 0 || roadOf(e) !== road) continue
-      e.slope = Math.max(e.slope, slope)
-      const k = atA ? e.b : e.a
-      if (streetJ(junctions[k])) continue // (a junction with another street stays on the ground)
-      const h = j.y - e.len * slope
-      if (h > junctions[k].y + 0.05) { junctions[k].y = h; stack.push([k, road, slope]) }
+    /** along the same road from a point s on an edge: how far to the nearest junction with another street, either way (up to 160 m) */
+    const toStreet = (ei: number, s: number) => {
+      const road = roadOf(edges[ei])
+      let best = 160
+      const walk = (ji: number, from: number, d: number) => {
+        if (d >= best) return
+        if (streetJ(junctions[ji])) { best = d; return }
+        for (const { e: k, atA } of junctions[ji].ends) {
+          if (k === from || roadOf(edges[k]) !== road) continue
+          walk(atA ? edges[k].b : edges[k].a, k, d + edges[k].len)
+        }
+      }
+      walk(edges[ei].a, ei, s)
+      walk(edges[ei].b, ei, edges[ei].len - s)
+      return best
     }
+    const hOf = (e: Edge, s: number) => peakHeight(e, s)
+    // (three passes: a road crossing over a road that is itself raised goes CLEAR above it)
+    for (let pass = 0; pass < 3; pass++) {
+      const lowH = crossings.map((c) => hOf(edges[c.lo], c.sl))
+      for (const e of edges) e.peaks = []
+      for (const j of junctions) j.y = 0
+      crossings.forEach((c, i) => {
+        const e = edges[c.up], H = lowH[i] + CLEAR
+        const room = Math.max(1, toStreet(c.up, c.su) - c.top)
+        const sl = Math.min(MAX_SLOPE, Math.max(SLOPE, H / room))
+        e.peaks.push({ s: c.su, h: H, sl, top: c.top })
+        // on along the same road, beyond each end, at the same slope
+        const road = roadOf(e)
+        const go = (ji: number, from: number, h: number) => {
+          if (h <= 0.05) return
+          for (const { e: k, atA } of junctions[ji].ends) {
+            const n = edges[k]
+            if (k === from || roadOf(n) !== road) continue
+            n.peaks.push({ s: atA ? 0 : n.len, h, sl, top: 0 })
+            go(atA ? n.b : n.a, k, h - n.len * sl)
+          }
+        }
+        go(e.a, c.up, H - Math.max(0, c.su - c.top) * sl)
+        go(e.b, c.up, H - Math.max(0, e.len - c.su - c.top) * sl)
+      })
+      // each junction as high as the highest road reaching it; every other road there starts at that height and comes down
+      for (const e of edges) { const ja = junctions[e.a], jb = junctions[e.b]; ja.y = Math.max(ja.y, hOf(e, 0)); jb.y = Math.max(jb.y, hOf(e, e.len)) }
+      const queue = junctions.map((_, i) => i).filter((i) => junctions[i].y > 0.05)
+      while (queue.length) {
+        const ji = queue.pop()!
+        const j = junctions[ji]
+        for (const { e: k, atA } of j.ends) {
+          const n = edges[k], here = atA ? 0 : n.len
+          if (hOf(n, here) >= j.y - 0.01) continue
+          const other = junctions[atA ? n.b : n.a]
+          const sl = streetJ(other) ? Math.min(MAX_SLOPE, Math.max(SLOPE, j.y / Math.max(1, n.len))) : SLOPE
+          n.peaks.push({ s: here, h: j.y, sl, top: 0 })
+          const oh = hOf(n, atA ? n.len : 0)
+          if (oh > other.y + 0.05) { other.y = oh; queue.push(atA ? n.b : n.a) }
+        }
+      }
+    }
+    for (const e of edges) { e.hA = hOf(e, 0); e.hB = hOf(e, e.len) }
   }
-  for (const e of edges) { e.hA = junctions[e.a].y; e.hB = junctions[e.b].y }
 
   // ---- each junction's size: as wide as the widest road meeting there ----
   for (const j of junctions) {
@@ -947,15 +954,17 @@ const LEVEL_SLACK = 3.5
 /** the height of a road's surface s metres along it: along a bridge, from one end's height to the other's; elsewhere, coming down
  *  at the approach slope from whichever end is high (and flat on the ground beyond) */
 export function heightAt(e: Edge, s: number): number {
-  if (e.hA === 0 && e.hB === 0 && !e.humps.length) return 0
-  if (e.level > 0) return e.hA + (e.hB - e.hA) * (e.len > 0 ? Math.max(0, Math.min(1, s / e.len)) : 0)
-  let h = Math.max(0, e.hA - s * e.slope, e.hB - (e.len - s) * e.slope)
-  // (over a road it crosses without a junction: level across the top, the approach slope either side)
-  for (const sc of e.humps) h = Math.max(h, LEVEL_H - Math.max(0, Math.abs(s - sc) - HUMP_TOP) * SLOPE)
+  return e.peaks.length ? peakHeight(e, s) : 0
+}
+function peakHeight(e: Edge, s: number): number {
+  let h = 0
+  for (const p of e.peaks) h = Math.max(h, p.h - Math.max(0, Math.abs(s - p.s) - p.top) * p.sl)
   return h
 }
-/** half the length of the level top of a bridge over a road the map does not say is bridged (m) */
-const HUMP_TOP = 12
+/** how far a road passing over another is above it (m) */
+const CLEAR = 5.6
+/** the steepest a road is ever made to climb (16%), where there is no room for a gentler slope */
+const MAX_SLOPE = 0.16
 /** the height of the road surface under a point, choosing the road nearest in height to `yNow` (where you are now); 0 off the road */
 export function surfaceAt(m: RealMap, x: number, z: number, yNow: number): number {
   let best = -1, bd = Infinity

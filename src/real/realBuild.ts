@@ -57,7 +57,7 @@ function sub(e: Edge, s0: number, s1: number): LP[] {
   const ss = [s0]
   for (let k = 1; k < e.cum.length - 1; k++) if (e.cum[k] > s0 + 0.05 && e.cum[k] < s1 - 0.05) ss.push(e.cum[k])
   ss.push(s1)
-  const ramps = e.hA > 0 || e.hB > 0 || e.humps.length > 0
+  const ramps = e.peaks.length > 0
   const out: LP[] = []
   const at = (s: number) => { const p = pointAt(e, s); out.push([p[0], p[1], heightAt(e, s)]) }
   for (let i = 0; i < ss.length; i++) {
